@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Configuration
-const ADMIN_NUMBER = '237651104356@c.us'; // Remplacer par le numéro admin
+const ADMIN_NUMBER = '237679199601@c.us'; // Remplacer par le numéro admin
 const DATA_FILE = path.join(__dirname, 'users_data.json');
 const USAGE_DURATION = 30 * 24 * 60 * 60 * 1000; // 30 jours
 const CONNECTION_CODE_DURATION = 10 * 60 * 1000; // 10 minutes pour le code de connexion
