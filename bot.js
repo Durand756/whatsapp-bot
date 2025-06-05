@@ -3,29 +3,23 @@ const qrcode = require('qrcode-terminal');
 const fs = require('fs');
 const path = require('path');
 
-// Configuration renforcée
-const ADMIN_NUMBER = '237679199601@c.us';
+// Configuration simplifiée et stable
+const ADMIN_NUMBER = '237651104356@c.us';
 const DATA_FILE = path.join(__dirname, 'users_data.json');
 const USAGE_DURATION = 30 * 24 * 60 * 60 * 1000; // 30 jours
-const CONNECTION_CODE_DURATION = 10 * 60 * 1000; // 10 minutes
 const MAX_RETRY_ATTEMPTS = 3;
-const HEALTH_CHECK_INTERVAL = 5 * 60 * 1000; // 5 minutes
 
-// Variables globales optimisées
+// Variables globales
 let userData = {
     users: {},
     accessCodes: {},
-    groups: {},
-    connectionCode: null,
-    connectionCodeExpiry: 0
+    groups: {}
 };
 
 let isReady = false;
-let lastActivity = Date.now();
 let retryCount = 0;
-let healthCheckInterval;
 
-// Fonctions utilitaires améliorées
+// Fonctions utilitaires
 function loadData() {
     try {
         if (fs.existsSync(DATA_FILE)) {
@@ -36,8 +30,6 @@ function loadData() {
                     users: {},
                     accessCodes: {},
                     groups: {},
-                    connectionCode: null,
-                    connectionCodeExpiry: 0,
                     ...parsed 
                 };
                 console.log('✅ Données chargées avec succès');
@@ -49,14 +41,13 @@ function loadData() {
         return true;
     } catch (error) {
         console.error('❌ Erreur chargement données:', error.message);
-        createBackup();
         return false;
     }
 }
 
 function saveData() {
     try {
-        cleanupBeforeSave();
+        cleanupExpiredData();
         const dataToSave = {
             ...userData,
             lastSave: Date.now()
@@ -67,30 +58,12 @@ function saveData() {
         return true;
     } catch (error) {
         console.error('❌ Erreur sauvegarde:', error.message);
-        createBackup();
         return false;
     }
 }
 
-function createBackup() {
-    try {
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const backupFile = path.join(__dirname, `backup_${timestamp}.json`);
-        fs.writeFileSync(backupFile, JSON.stringify(userData, null, 2));
-        console.log(`🔄 Backup créé: ${backupFile}`);
-    } catch (error) {
-        console.error('❌ Erreur backup:', error.message);
-    }
-}
-
-function cleanupBeforeSave() {
+function cleanupExpiredData() {
     const now = Date.now();
-    
-    // Nettoyer code de connexion expiré
-    if (userData.connectionCodeExpiry && now > userData.connectionCodeExpiry) {
-        userData.connectionCode = null;
-        userData.connectionCodeExpiry = 0;
-    }
     
     // Nettoyer codes d'accès expirés (24h)
     Object.keys(userData.accessCodes).forEach(phone => {
@@ -99,28 +72,6 @@ function cleanupBeforeSave() {
             delete userData.accessCodes[phone];
         }
     });
-}
-
-// Gestion des codes améliorée
-function generateConnectionCode() {
-    const code = Math.floor(10000000 + Math.random() * 90000000).toString();
-    userData.connectionCode = code;
-    userData.connectionCodeExpiry = Date.now() + CONNECTION_CODE_DURATION;
-    saveData();
-    
-    console.log(`🔑 Code de connexion: ${code.substring(0,4)} ${code.substring(4)}`);
-    return code;
-}
-
-function verifyConnectionCode(inputCode) {
-    const now = Date.now();
-    const cleanInput = inputCode.replace(/\s/g, '');
-    
-    if (!userData.connectionCode || now > userData.connectionCodeExpiry) {
-        return false;
-    }
-    
-    return userData.connectionCode === cleanInput;
 }
 
 function generateAccessCode(phoneNumber) {
@@ -166,11 +117,10 @@ function validateAccessCode(phoneNumber, code) {
     return true;
 }
 
-// Configuration client optimisée pour la stabilité
+// Configuration client CORRIGÉE pour la stabilité
 const client = new Client({
     authStrategy: new LocalAuth({
-        clientId: "whatsapp-bot-stable",
-        dataPath: './auth_data'
+        clientId: "whatsapp-bot-v2"
     }),
     puppeteer: {
         headless: true,
@@ -178,165 +128,109 @@ const client = new Client({
             '--no-sandbox',
             '--disable-setuid-sandbox',
             '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
             '--disable-web-security',
-            '--disable-features=VizDisplayCompositor',
             '--no-first-run',
             '--disable-gpu',
             '--disable-background-timer-throttling',
             '--disable-backgrounding-occluded-windows',
-            '--disable-renderer-backgrounding',
-            '--memory-pressure-off',
-            '--max_old_space_size=4096'
+            '--disable-renderer-backgrounding'
         ],
-        timeout: 120000, // 2 minutes
-        slowMo: 50 // Ralentir pour éviter les erreurs
+        timeout: 60000 // Réduit à 1 minute
+    },
+    webVersionCache: {
+        type: 'remote',
+        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html'
     }
 });
 
-// Gestion améliorée des événements
+// Gestion des événements de connexion
 client.on('qr', (qr) => {
     console.log('\n' + '='.repeat(50));
-    console.log('🔗 CONNEXION WHATSAPP - 2 OPTIONS');
+    console.log('🔗 SCAN CE QR CODE AVEC WHATSAPP');
     console.log('='.repeat(50));
     
-    console.log('\n📱 OPTION 1 - QR Code:');
     qrcode.generate(qr, { small: true });
     
-    console.log('\n🔢 OPTION 2 - Code de connexion:');
-    const connectionCode = generateConnectionCode();
-    console.log('┌─────────────────────────────────────────┐');
-    console.log('│      CODE DE CONNEXION WHATSAPP        │');
-    console.log('├─────────────────────────────────────────┤');
-    console.log(`│           ${connectionCode.substring(0,4)} ${connectionCode.substring(4)}              │`);
-    console.log('├─────────────────────────────────────────┤');
-    console.log('│      Valide pendant 10 minutes         │');
-    console.log('└─────────────────────────────────────────┘');
-    
-    console.log('\n📝 Instructions:');
-    console.log('1. Ouvrez WhatsApp sur votre mobile');
-    console.log('2. Menu → Appareils liés');
-    console.log('3. "Lier un appareil"');
-    console.log('4. "Lier avec le numéro"');
-    console.log(`5. Saisissez: ${connectionCode.substring(0,4)} ${connectionCode.substring(4)}`);
-    console.log('\n⏱️  En attente de connexion...\n');
+    console.log('\n📱 Instructions:');
+    console.log('1. Ouvrez WhatsApp sur votre téléphone');
+    console.log('2. Allez dans Menu (⋮) → Appareils liés');
+    console.log('3. Appuyez sur "Lier un appareil"');
+    console.log('4. Scannez le QR code ci-dessus');
+    console.log('\n⏱️  En attente de la connexion...\n');
 });
 
 client.on('ready', () => {
     isReady = true;
     retryCount = 0;
-    lastActivity = Date.now();
     
     console.log('\n' + '🎉'.repeat(20));
     console.log('🚀 BOT WHATSAPP CONNECTÉ AVEC SUCCÈS!');
     console.log('🎉'.repeat(20));
-    console.log(`📞 Admin: ${ADMIN_NUMBER}`);
-    console.log(`🕒 Connecté à: ${new Date().toLocaleString('fr-FR')}`);
+    console.log(`📞 Admin: ${ADMIN_NUMBER.replace('@c.us', '')}`);
+    console.log(`🕒 Connecté le: ${new Date().toLocaleString('fr-FR')}`);
     console.log('✅ Toutes les fonctionnalités sont opérationnelles');
     console.log('🎉'.repeat(20) + '\n');
-    
-    // Démarrer le monitoring de santé
-    startHealthCheck();
-    
-    // Nettoyage initial
-    setTimeout(() => {
-        cleanupExpiredData();
-    }, 5000);
 });
 
 client.on('authenticated', () => {
-    console.log('🔐 Authentification réussie');
+    console.log('🔐 Authentification réussie - Session sauvegardée');
 });
 
 client.on('auth_failure', (msg) => {
     console.error('❌ Échec authentification:', msg);
+    console.log('🗑️ Suppression des données d\'authentification corrompues...');
+    
+    // Supprimer le dossier d'authentification corrompu
+    const authPath = path.join(__dirname, '.wwebjs_auth');
+    if (fs.existsSync(authPath)) {
+        fs.rmSync(authPath, { recursive: true, force: true });
+        console.log('🗑️ Dossier d\'authentification supprimé');
+    }
+    
     handleReconnection('auth_failure');
 });
 
 client.on('disconnected', (reason) => {
     console.log('🔌 Déconnecté:', reason);
     isReady = false;
-    stopHealthCheck();
+    
+    // Ne pas redémarrer automatiquement pour certaines raisons
+    if (reason === 'NAVIGATION' || reason === 'LOGOUT') {
+        console.log('📱 Déconnexion manuelle - Redémarrage nécessaire');
+        return;
+    }
+    
     handleReconnection(reason);
 });
 
-// Système de reconnexion automatique
+// Gestion des erreurs de session
+client.on('loading_screen', (percent, message) => {
+    console.log('⏳ Chargement:', percent + '%', message);
+});
+
+// Système de reconnexion amélioré
 function handleReconnection(reason) {
     if (retryCount >= MAX_RETRY_ATTEMPTS) {
-        console.error('❌ Nombre max de tentatives atteint. Arrêt du bot.');
+        console.error('❌ Trop de tentatives échouées. Redémarrez manuellement le bot.');
         process.exit(1);
     }
     
     retryCount++;
-    console.log(`🔄 Tentative de reconnexion ${retryCount}/${MAX_RETRY_ATTEMPTS} dans 30s...`);
+    const waitTime = Math.min(30 * retryCount, 120); // Augmente le délai à chaque tentative
+    
+    console.log(`🔄 Reconnexion ${retryCount}/${MAX_RETRY_ATTEMPTS} dans ${waitTime}s...`);
     
     setTimeout(() => {
-        console.log('🚀 Reconnexion en cours...');
+        console.log('🚀 Tentative de reconnexion...');
         client.initialize().catch(error => {
             console.error('❌ Erreur reconnexion:', error.message);
         });
-    }, 30000);
+    }, waitTime * 1000);
 }
 
-// Monitoring de santé
-function startHealthCheck() {
-    healthCheckInterval = setInterval(async () => {
-        try {
-            if (isReady) {
-                const state = await client.getState();
-                if (state !== 'CONNECTED') {
-                    console.log('⚠️ État inattendu:', state);
-                    isReady = false;
-                }
-            }
-            console.log(`💓 Health check: ${isReady ? 'OK' : 'DISCONNECTED'} - ${new Date().toISOString()}`);
-        } catch (error) {
-            console.error('❌ Health check failed:', error.message);
-            isReady = false;
-        }
-    }, HEALTH_CHECK_INTERVAL);
-}
-
-function stopHealthCheck() {
-    if (healthCheckInterval) {
-        clearInterval(healthCheckInterval);
-        healthCheckInterval = null;
-    }
-}
-
-// Nettoyage optimisé
-function cleanupExpiredData() {
-    const now = Date.now();
-    let cleaned = false;
-    
-    // Nettoyer codes d'accès expirés (24h)
-    Object.keys(userData.accessCodes).forEach(phone => {
-        if (now - userData.accessCodes[phone].generated > 24 * 60 * 60 * 1000) {
-            delete userData.accessCodes[phone];
-            cleaned = true;
-        }
-    });
-    
-    // Nettoyer utilisateurs expirés
-    Object.keys(userData.users).forEach(phone => {
-        const user = userData.users[phone];
-        if (user.authorized && (now - user.authorizedAt) > USAGE_DURATION) {
-            user.authorized = false;
-            cleaned = true;
-        }
-    });
-    
-    if (cleaned) {
-        saveData();
-        console.log('🧹 Nettoyage des données expirées effectué');
-    }
-}
-
-// Traitement des messages avec gestion d'erreurs renforcée
+// Traitement des messages
 client.on('message', async (message) => {
     if (!isReady) return;
-    
-    lastActivity = Date.now();
     
     try {
         const contact = await message.getContact();
@@ -344,22 +238,8 @@ client.on('message', async (message) => {
         const messageText = message.body.toLowerCase().trim();
         const chat = await message.getChat();
         
-        // Log des messages pour debug (optionnel)
-        // console.log(`📨 Message de ${contact.pushname || contact.number}: ${message.body}`);
-        
-        // Vérification code de connexion
-        if (messageText.startsWith('/connect ')) {
-            const inputCode = messageText.split(' ')[1];
-            if (verifyConnectionCode(inputCode)) {
-                await message.reply('✅ Code de connexion valide! WhatsApp Web est maintenant connecté.');
-                userData.connectionCode = null;
-                userData.connectionCodeExpiry = 0;
-                saveData();
-            } else {
-                await message.reply('❌ Code de connexion invalide ou expiré.\nDemandez un nouveau code à l\'admin.');
-            }
-            return;
-        }
+        // Éviter les boucles de messages du bot
+        if (contact.isMe) return;
         
         // Commandes administrateur
         if (userNumber === ADMIN_NUMBER) {
@@ -377,227 +257,222 @@ client.on('message', async (message) => {
             
             if (validateAccessCode(userNumber, code)) {
                 const expiryDate = new Date(Date.now() + USAGE_DURATION).toLocaleDateString('fr-FR');
-                await message.reply(`🎉 *ACCÈS ACTIVÉ AVEC SUCCÈS!*\n\n✅ Durée: 30 jours\n📅 Expire le: ${expiryDate}\n\n📋 *Commandes disponibles:*\n• /broadcast [msg] - Diffuser message\n• /addgroup - Ajouter ce groupe\n• /mygroups - Voir mes groupes\n• /status - Mon statut\n• /help - Aide complète\n\n🚀 Vous pouvez maintenant utiliser toutes les fonctionnalités!`);
+                await message.reply(`🎉 *ACCÈS ACTIVÉ!*\n\n✅ Durée: 30 jours\n📅 Expire le: ${expiryDate}\n\n📋 *Commandes:*\n• /broadcast [msg] - Diffuser\n• /addgroup - Ajouter groupe\n• /mygroups - Mes groupes\n• /status - Mon statut\n• /help - Aide\n\n🚀 Toutes les fonctionnalités sont activées!`);
             } else {
-                await message.reply('❌ *Code invalide*\n\nVérifiez:\n• Le code est correct\n• Il n\'est pas expiré (24h max)\n• Il n\'a pas déjà été utilisé\n\nContactez l\'admin pour un nouveau code.');
+                await message.reply('❌ Code invalide, expiré ou déjà utilisé.\nContactez l\'admin pour un nouveau code.');
             }
             return;
         }
         
-        // Vérifier autorisation pour autres commandes
+        // Vérifier autorisation
         if (!isUserAuthorized(userNumber)) {
             if (messageText.startsWith('/')) {
-                await message.reply('🔒 *ACCÈS REQUIS*\n\nVous devez activer votre accès pour utiliser les commandes.\n\n📞 Contactez l\'administrateur pour obtenir un code d\'activation.\n\n💡 Usage: /activate [CODE]');
+                await message.reply('🔒 *ACCÈS REQUIS*\n\nContactez l\'admin pour obtenir un code.\nUsage: /activate [CODE]');
             }
             return;
         }
         
-        // Commandes utilisateur autorisé
+        // Commandes utilisateur
         await handleUserCommands(message, messageText, userNumber, contact, chat);
         
     } catch (error) {
-        console.error('❌ Erreur traitement message:', error.message);
+        console.error('❌ Erreur message:', error.message);
         
-        // Gestion spécifique des erreurs courantes
-        if (error.message.includes('Rate limit')) {
-            await message.reply('⏳ Trop de messages trop rapidement. Patientez quelques secondes.');
-        } else if (error.message.includes('Message not found')) {
-            console.log('⚠️ Message non trouvé (probablement supprimé)');
-        } else {
-            await message.reply('❌ Une erreur est survenue. Réessayez dans quelques instants.');
+        // Éviter les réponses d'erreur en boucle
+        if (!error.message.includes('Rate limit') && !error.message.includes('not found')) {
+            try {
+                await message.reply('❌ Erreur temporaire. Réessayez.');
+            } catch (replyError) {
+                console.error('❌ Impossible de répondre:', replyError.message);
+            }
         }
     }
 });
 
 // Gestion des commandes admin
 async function handleAdminCommands(message, messageText, contact) {
-    switch (true) {
-        case messageText.startsWith('/gencode '):
-            const targetNumber = messageText.split(' ')[1];
-            if (!targetNumber) {
-                await message.reply('❌ Usage: /gencode [numéro]\n\nExemple: /gencode 237123456789');
-                return;
-            }
-            const formattedNumber = targetNumber.includes('@') ? targetNumber : `${targetNumber}@c.us`;
-            const code = generateAccessCode(formattedNumber);
-            await message.reply(`✅ *CODE GÉNÉRÉ AVEC SUCCÈS*\n\n👤 Pour: ${targetNumber}\n🔑 Code: *${code}*\n⏰ Validité: 24 heures\n🎯 Usage: Unique\n\n📋 *Instructions pour l'utilisateur:*\nEnvoyer: /activate ${code}\n\n💡 Le code sera automatiquement supprimé après usage.`);
-            break;
-            
-        case messageText === '/stats':
-            await sendStats(message);
-            break;
-            
-        case messageText === '/newcode':
-            const newConnCode = generateConnectionCode();
-            await message.reply(`🔢 *NOUVEAU CODE DE CONNEXION*\n\n*${newConnCode.substring(0,4)} ${newConnCode.substring(4)}*\n\n⏰ Valide pendant 10 minutes\n📱 À saisir dans l'application WhatsApp mobile\n\n📝 Instructions:\n1. WhatsApp → Appareils liés\n2. Lier un appareil\n3. Lier avec le numéro\n4. Saisir le code`);
-            break;
-            
-        case messageText === '/cleanup':
-            cleanupExpiredData();
-            await message.reply('🧹 *Nettoyage terminé*\n\nDonnées expirées supprimées avec succès.');
-            break;
-            
-        case messageText === '/backup':
-            createBackup();
-            await message.reply('💾 *Backup créé*\n\nSauvegarde des données effectuée.');
-            break;
-            
-        case messageText === '/help':
-            await message.reply(`🤖 *COMMANDES ADMINISTRATEUR*\n\n🔑 /gencode [numéro] - Générer code d'accès\n🔢 /newcode - Nouveau code de connexion\n📊 /stats - Statistiques détaillées\n🧹 /cleanup - Nettoyer données expirées\n💾 /backup - Créer une sauvegarde\n❓ /help - Cette aide\n\n💡 *Conseils:*\n• Générez des codes régulièrement\n• Surveillez les stats\n• Nettoyez périodiquement`);
-            break;
+    try {
+        switch (true) {
+            case messageText.startsWith('/gencode '):
+                const targetNumber = messageText.split(' ')[1];
+                if (!targetNumber) {
+                    await message.reply('❌ Usage: /gencode [numéro]\n\nExemple: /gencode 237123456789');
+                    return;
+                }
+                const formattedNumber = targetNumber.includes('@') ? targetNumber : `${targetNumber}@c.us`;
+                const code = generateAccessCode(formattedNumber);
+                await message.reply(`✅ *CODE GÉNÉRÉ*\n\n👤 Pour: ${targetNumber}\n🔑 Code: *${code}*\n⏰ Valide 24h\n\n📋 *Instructions:*\n/activate ${code}`);
+                break;
+                
+            case messageText === '/stats':
+                await sendStats(message);
+                break;
+                
+            case messageText === '/cleanup':
+                cleanupExpiredData();
+                await message.reply('🧹 Nettoyage effectué');
+                break;
+                
+            case messageText === '/help':
+                await message.reply(`🤖 *ADMIN COMMANDS*\n\n🔑 /gencode [numéro]\n📊 /stats\n🧹 /cleanup\n❓ /help`);
+                break;
+        }
+    } catch (error) {
+        console.error('❌ Erreur commande admin:', error.message);
     }
 }
 
 // Gestion des commandes utilisateur
 async function handleUserCommands(message, messageText, userNumber, contact, chat) {
-    switch (messageText) {
-        case '/status':
-            await sendUserStatus(message, userNumber);
-            break;
-            
-        case '/addgroup':
-            if (!chat.isGroup) {
-                await message.reply('❌ *Commande réservée aux groupes*\n\nVous devez être dans un groupe pour utiliser cette commande.');
-                return;
-            }
-            
-            const groupId = chat.id._serialized;
-            userData.groups[groupId] = {
-                name: chat.name,
-                addedBy: userNumber,
-                addedAt: Date.now()
-            };
-            saveData();
-            await message.reply(`✅ *GROUPE AJOUTÉ*\n\n📝 Nom: "${chat.name}"\n📅 Ajouté le: ${new Date().toLocaleDateString('fr-FR')}\n\n💡 Vous pouvez maintenant diffuser des messages dans ce groupe avec /broadcast`);
-            break;
-            
-        case '/mygroups':
-            await sendUserGroups(message, userNumber);
-            break;
-            
-        case '/help':
-            await message.reply(`🤖 *COMMANDES UTILISATEUR*\n\n📢 /broadcast [message] - Diffuser un message\n➕ /addgroup - Ajouter ce groupe à vos diffusions\n📋 /mygroups - Voir vos groupes\n📊 /status - Votre statut d'accès\n❓ /help - Cette aide\n\n💡 *Exemple de diffusion:*\n/broadcast Bonjour à tous ! 👋\n\n⚠️ *Important:*\nAjoutez d'abord des groupes avec /addgroup`);
-            break;
-    }
-    
-    // Commande broadcast
-    if (messageText.startsWith('/broadcast ')) {
-        await handleBroadcast(message, messageText, userNumber, contact);
+    try {
+        switch (messageText) {
+            case '/status':
+                await sendUserStatus(message, userNumber);
+                break;
+                
+            case '/addgroup':
+                if (!chat.isGroup) {
+                    await message.reply('❌ Commande pour les groupes uniquement');
+                    return;
+                }
+                
+                const groupId = chat.id._serialized;
+                userData.groups[groupId] = {
+                    name: chat.name,
+                    addedBy: userNumber,
+                    addedAt: Date.now()
+                };
+                saveData();
+                await message.reply(`✅ Groupe "${chat.name}" ajouté!`);
+                break;
+                
+            case '/mygroups':
+                await sendUserGroups(message, userNumber);
+                break;
+                
+            case '/help':
+                await message.reply(`🤖 *COMMANDES*\n\n📢 /broadcast [msg]\n➕ /addgroup\n📋 /mygroups\n📊 /status\n❓ /help`);
+                break;
+        }
+        
+        // Commande broadcast
+        if (messageText.startsWith('/broadcast ')) {
+            await handleBroadcast(message, messageText, userNumber, contact);
+        }
+    } catch (error) {
+        console.error('❌ Erreur commande utilisateur:', error.message);
     }
 }
 
-// Fonctions auxiliaires pour les statistiques et statuts
+// Fonctions auxiliaires
 async function sendStats(message) {
-    const activeUsers = Object.values(userData.users).filter(user => 
-        user.authorized && (Date.now() - user.authorizedAt) < USAGE_DURATION
-    ).length;
-    
-    const totalUsers = Object.keys(userData.users).length;
-    const totalGroups = Object.keys(userData.groups).length;
-    const pendingCodes = Object.keys(userData.accessCodes).filter(phone => 
-        !userData.accessCodes[phone].used
-    ).length;
-    
-    const uptime = Math.floor((Date.now() - lastActivity) / 60000);
-    
-    await message.reply(`📊 *STATISTIQUES DÉTAILLÉES*\n\n👥 Utilisateurs actifs: ${activeUsers}\n👤 Total utilisateurs: ${totalUsers}\n💬 Groupes configurés: ${totalGroups}\n🔑 Codes en attente: ${pendingCodes}\n⏰ Dernière activité: ${uptime}min\n🚀 Statut: ${isReady ? '✅ Connecté' : '❌ Déconnecté'}\n\n📅 Mis à jour: ${new Date().toLocaleString('fr-FR')}`);
+    try {
+        const activeUsers = Object.values(userData.users).filter(user => 
+            user.authorized && (Date.now() - user.authorizedAt) < USAGE_DURATION
+        ).length;
+        
+        const totalUsers = Object.keys(userData.users).length;
+        const totalGroups = Object.keys(userData.groups).length;
+        const pendingCodes = Object.keys(userData.accessCodes).filter(phone => 
+            !userData.accessCodes[phone].used
+        ).length;
+        
+        await message.reply(`📊 *STATS*\n\n👥 Actifs: ${activeUsers}\n👤 Total: ${totalUsers}\n💬 Groupes: ${totalGroups}\n🔑 Codes: ${pendingCodes}\n🚀 Statut: ${isReady ? '✅' : '❌'}`);
+    } catch (error) {
+        console.error('❌ Erreur stats:', error.message);
+    }
 }
 
 async function sendUserStatus(message, userNumber) {
-    const user = userData.users[userNumber];
-    const timeLeft = USAGE_DURATION - (Date.now() - user.authorizedAt);
-    const daysLeft = Math.ceil(timeLeft / (24 * 60 * 60 * 1000));
-    const userGroups = Object.keys(userData.groups).filter(g => 
-        userData.groups[g].addedBy === userNumber
-    ).length;
-    
-    await message.reply(`📊 *VOTRE STATUT*\n\n✅ Statut: Autorisé\n⏰ Temps restant: ${daysLeft} jours\n💬 Vos groupes: ${userGroups}\n📅 Activé le: ${new Date(user.authorizedAt).toLocaleDateString('fr-FR')}\n🔄 Expire le: ${new Date(user.authorizedAt + USAGE_DURATION).toLocaleDateString('fr-FR')}\n\n💡 Contactez l'admin pour renouveler avant expiration.`);
+    try {
+        const user = userData.users[userNumber];
+        const timeLeft = USAGE_DURATION - (Date.now() - user.authorizedAt);
+        const daysLeft = Math.ceil(timeLeft / (24 * 60 * 60 * 1000));
+        const userGroups = Object.keys(userData.groups).filter(g => 
+            userData.groups[g].addedBy === userNumber
+        ).length;
+        
+        await message.reply(`📊 *VOTRE STATUT*\n\n✅ Autorisé\n⏰ ${daysLeft} jours restants\n💬 ${userGroups} groupes\n📅 Expire: ${new Date(user.authorizedAt + USAGE_DURATION).toLocaleDateString('fr-FR')}`);
+    } catch (error) {
+        console.error('❌ Erreur statut:', error.message);
+    }
 }
 
 async function sendUserGroups(message, userNumber) {
-    const myGroups = Object.entries(userData.groups)
-        .filter(([_, groupData]) => groupData.addedBy === userNumber)
-        .map(([_, groupData]) => `• ${groupData.name}`)
-        .join('\n');
-    
-    if (myGroups) {
-        const groupCount = myGroups.split('\n').length;
-        await message.reply(`📋 *VOS GROUPES (${groupCount})*\n\n${myGroups}\n\n💡 Pour ajouter un groupe:\n1. Allez dans le groupe\n2. Tapez /addgroup\n\n📢 Pour diffuser: /broadcast [votre message]`);
-    } else {
-        await message.reply('📭 *Aucun groupe configuré*\n\n💡 Pour ajouter des groupes:\n1. Rejoignez un groupe WhatsApp\n2. Dans le groupe, tapez /addgroup\n3. Le groupe sera ajouté à votre liste\n\n📢 Vous pourrez ensuite diffuser avec /broadcast');
+    try {
+        const myGroups = Object.entries(userData.groups)
+            .filter(([_, groupData]) => groupData.addedBy === userNumber)
+            .map(([_, groupData]) => `• ${groupData.name}`)
+            .join('\n');
+        
+        if (myGroups) {
+            const groupCount = myGroups.split('\n').length;
+            await message.reply(`📋 *VOS GROUPES (${groupCount})*\n\n${myGroups}\n\n💡 /broadcast [message] pour diffuser`);
+        } else {
+            await message.reply('📭 Aucun groupe\n\n💡 Dans un groupe: /addgroup');
+        }
+    } catch (error) {
+        console.error('❌ Erreur groupes:', error.message);
     }
 }
 
 // Gestion de la diffusion
 async function handleBroadcast(message, messageText, userNumber, contact) {
-    const broadcastMessage = message.body.substring(11);
-    if (!broadcastMessage.trim()) {
-        await message.reply('❌ *Message vide*\n\nUsage: /broadcast [votre message]\n\nExemple:\n/broadcast Bonjour tout le monde ! 👋');
-        return;
-    }
-    
-    const userGroups = Object.entries(userData.groups)
-        .filter(([_, groupData]) => groupData.addedBy === userNumber);
-    
-    if (userGroups.length === 0) {
-        await message.reply('📭 *Aucun groupe disponible*\n\n💡 Pour ajouter des groupes:\n1. Allez dans un groupe\n2. Tapez /addgroup\n3. Répétez pour chaque groupe souhaité\n\n📢 Vous pourrez ensuite diffuser vos messages !');
-        return;
-    }
-    
-    await message.reply(`🚀 *DIFFUSION EN COURS...*\n\n📊 Groupes cibles: ${userGroups.length}\n⏳ Veuillez patienter...`);
-    
-    let successCount = 0;
-    let failCount = 0;
-    const failedGroups = [];
-    
-    for (const [groupId, groupData] of userGroups) {
-        try {
-            const formattedMessage = `📢 *Message Diffusé*\n\n${broadcastMessage}\n\n_👤 Envoyé par: ${contact.pushname || contact.number}_\n_🕒 Le: ${new Date().toLocaleString('fr-FR')}_`;
-            
-            await client.sendMessage(groupId, formattedMessage);
-            successCount++;
-            
-            // Pause pour éviter le spam
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            
-        } catch (error) {
-            console.error(`❌ Erreur groupe ${groupData.name}:`, error.message);
-            failCount++;
-            failedGroups.push(groupData.name);
-            
-            // Pause même en cas d'erreur
-            await new Promise(resolve => setTimeout(resolve, 1000));
+    try {
+        const broadcastMessage = message.body.substring(11);
+        if (!broadcastMessage.trim()) {
+            await message.reply('❌ Message vide\n\nUsage: /broadcast [message]');
+            return;
         }
-    }
-    
-    let resultMessage = `📊 *DIFFUSION TERMINÉE*\n\n✅ Succès: ${successCount}/${userGroups.length}`;
-    
-    if (failCount > 0) {
-        resultMessage += `\n❌ Échecs: ${failCount}`;
-        if (failedGroups.length > 0) {
-            resultMessage += `\n\n⚠️ Groupes en échec:\n${failedGroups.map(name => `• ${name}`).join('\n')}`;
+        
+        const userGroups = Object.entries(userData.groups)
+            .filter(([_, groupData]) => groupData.addedBy === userNumber);
+        
+        if (userGroups.length === 0) {
+            await message.reply('📭 Aucun groupe\n\n💡 /addgroup dans vos groupes');
+            return;
         }
-    } else {
-        resultMessage += '\n🎉 Tous les messages ont été envoyés !';
+        
+        await message.reply(`🚀 Diffusion vers ${userGroups.length} groupes...`);
+        
+        let successCount = 0;
+        let failCount = 0;
+        
+        for (const [groupId, groupData] of userGroups) {
+            try {
+                const formattedMessage = `📢 *Message Diffusé*\n\n${broadcastMessage}\n\n_👤 ${contact.pushname || 'Utilisateur'}_\n_🕒 ${new Date().toLocaleString('fr-FR')}_`;
+                
+                await client.sendMessage(groupId, formattedMessage);
+                successCount++;
+                
+                // Pause anti-spam
+                await new Promise(resolve => setTimeout(resolve, 3000));
+                
+            } catch (error) {
+                console.error(`❌ Groupe ${groupData.name}:`, error.message);
+                failCount++;
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+        }
+        
+        await message.reply(`📊 *RÉSULTAT*\n\n✅ Succès: ${successCount}\n${failCount > 0 ? `❌ Échecs: ${failCount}` : '🎉 Tout envoyé!'}\n\n🕒 ${new Date().toLocaleTimeString('fr-FR')}`);
+        
+    } catch (error) {
+        console.error('❌ Erreur broadcast:', error.message);
+        await message.reply('❌ Erreur lors de la diffusion');
     }
-    
-    resultMessage += `\n\n🕒 Terminé à: ${new Date().toLocaleTimeString('fr-FR')}`;
-    
-    await message.reply(resultMessage);
 }
 
-// Gestion propre de l'arrêt
+// Gestion de l'arrêt
 const gracefulShutdown = () => {
-    console.log('\n🛑 Arrêt du bot en cours...');
-    stopHealthCheck();
+    console.log('\n🛑 Arrêt du bot...');
     saveData();
     
     if (client) {
         client.destroy().then(() => {
-            console.log('✅ Bot arrêté proprement');
+            console.log('✅ Bot arrêté');
             process.exit(0);
         }).catch(() => {
-            console.log('⚠️ Arrêt forcé');
             process.exit(0);
         });
     } else {
@@ -605,50 +480,25 @@ const gracefulShutdown = () => {
     }
 };
 
-// Gestion des signaux système
 process.on('SIGINT', gracefulShutdown);
 process.on('SIGTERM', gracefulShutdown);
-process.on('uncaughtException', (error) => {
-    console.error('❌ Exception non gérée:', error.message);
-    createBackup();
-    gracefulShutdown();
-});
 
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('❌ Promesse rejetée non gérée:', reason);
-});
+// Démarrage
+console.log('\n🚀 DÉMARRAGE BOT WHATSAPP');
+console.log('===============================');
 
-// Initialisation du bot
-console.log('\n' + '🚀'.repeat(20));
-console.log('DÉMARRAGE BOT WHATSAPP AVANCÉ');
-console.log('🚀'.repeat(20));
-console.log('📍 Version: Stable & Optimisée');
-console.log('🌐 Environnement: Render.com Ready');
-console.log('🔧 Fonctionnalités: Complètes');
-console.log('🚀'.repeat(20) + '\n');
-
-// Chargement des données
 if (!loadData()) {
-    console.error('❌ Impossible de charger les données. Arrêt du bot.');
+    console.error('❌ Erreur chargement données');
     process.exit(1);
 }
 
 // Nettoyage périodique (toutes les heures)
-setInterval(() => {
-    if (Date.now() - lastActivity > 30 * 60 * 1000) { // Si inactif depuis 30min
-        cleanupExpiredData();
-    }
-}, 60 * 60 * 1000);
+setInterval(cleanupExpiredData, 60 * 60 * 1000);
 
-// Démarrage du client
-console.log('🔄 Initialisation du client WhatsApp...');
+console.log('🔄 Initialisation...');
 client.initialize().catch(error => {
-    console.error('❌ Erreur initialisation:', error.message);
-    console.log('🔄 Nouvelle tentative dans 10 secondes...');
-    setTimeout(() => {
-        process.exit(1);
-    }, 10000);
+    console.error('❌ Erreur init:', error.message);
+    process.exit(1);
 });
 
-console.log('✅ Bot WhatsApp démarré avec succès!');
-console.log('📞 En attente de connexion...\n');
+console.log('✅ Bot prêt - En attente de connexion\n');
