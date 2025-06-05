@@ -1,32 +1,25 @@
 {
-  "name": "whatsapp-bot-advanced",
-  "version": "2.0.0",
-  "description": "Bot WhatsApp haute performance avec code de connexion et système d'auth",
+  "name": "whatsapp-bot",
+  "version": "1.0.0",
+  "description": "Bot WhatsApp avec système de diffusion",
   "main": "bot.js",
   "scripts": {
-    "start": "node --max-old-space-size=512 bot.js",
-    "dev": "nodemon bot.js",
-    "cleanup": "node -e \"require('fs').writeFileSync('users_data.json', '{}')\"",
-    "backup": "cp users_data.json backup_$(date +%s).json"
+    "start": "node bot.js",
+    "dev": "nodemon bot.js"
   },
   "dependencies": {
-    "whatsapp-web.js": "^1.21.0",
-    "qrcode-terminal": "^0.12.0"
+    "whatsapp-web.js": "^1.23.0",
+    "qrcode-terminal": "^0.12.0",
+    "qrcode": "^1.5.3",
+    "express": "^4.18.2"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
   },
   "engines": {
-    "node": ">=18.0.0",
-    "npm": ">=8.0.0"
+    "node": ">=16.0.0"
   },
-  "keywords": [
-    "whatsapp",
-    "bot",
-    "performance",
-    "render",
-    "connection-code"
-  ],
-  "author": "WhatsApp Bot Pro",
+  "keywords": ["whatsapp", "bot", "broadcast"],
+  "author": "Votre nom",
   "license": "MIT"
 }
