@@ -1,0 +1,28 @@
+{
+  "name": "whatsapp-bot-admin",
+  "version": "1.0.0",
+  "description": "Bot WhatsApp avec système d'authentification et diffusion",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "nodemon bot.js"
+  },
+  "dependencies": {
+    "whatsapp-web.js": "^1.21.0",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "keywords": [
+    "whatsapp",
+    "bot",
+    "javascript",
+    "node"
+  ],
+  "author": "Votre Nom",
+  "license": "MIT"
+}
