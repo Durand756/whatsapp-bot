@@ -1,11 +1,13 @@
 {
-  "name": "whatsapp-bot-admin",
-  "version": "1.0.0",
-  "description": "Bot WhatsApp avec système d'authentification et diffusion",
+  "name": "whatsapp-bot-advanced",
+  "version": "2.0.0",
+  "description": "Bot WhatsApp haute performance avec code de connexion et système d'auth",
   "main": "bot.js",
   "scripts": {
-    "start": "node bot.js",
-    "dev": "nodemon bot.js"
+    "start": "node --max-old-space-size=512 bot.js",
+    "dev": "nodemon bot.js",
+    "cleanup": "node -e \"require('fs').writeFileSync('users_data.json', '{}')\"",
+    "backup": "cp users_data.json backup_$(date +%s).json"
   },
   "dependencies": {
     "whatsapp-web.js": "^1.21.0",
@@ -15,14 +17,16 @@
     "nodemon": "^3.0.1"
   },
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
   },
   "keywords": [
     "whatsapp",
     "bot",
-    "javascript",
-    "node"
+    "performance",
+    "render",
+    "connection-code"
   ],
-  "author": "Votre Nom",
+  "author": "WhatsApp Bot Pro",
   "license": "MIT"
 }
