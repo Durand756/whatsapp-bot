@@ -3,61 +3,46 @@ const QRCode = require('qrcode');
 const express = require('express');
 const { google } = require('googleapis');
 
-// Configuration centralisée
+// Configuration
 const CONFIG = {
     ADMIN_NUMBER: '237651104356@c.us',
     PORT: process.env.PORT || 3000,
     USAGE_DAYS: 30,
     CODE_EXPIRY_HOURS: 24,
     GDRIVE_FOLDER_ID: process.env.GDRIVE_FOLDER_ID || null,
-    FILES: {
-        USERS: 'users.json',
-        CODES: 'codes.json',
-        GROUPS: 'groups.json',
-        SESSION: 'session.json'
-    }
+    BACKUP_INTERVAL_MS: 60000, // 1 minute minimum requis
+    FILES: { USERS: 'users.json', CODES: 'codes.json', GROUPS: 'groups.json', SESSION: 'session.json' }
 };
 
 // État global
 const state = {
-    ready: false,
-    qr: null,
-    client: null,
-    server: null,
-    drive: null,
-    fileIds: {},
-    cache: {
-        users: new Map(),
-        codes: new Map(),
-        groups: new Map()
-    },
-    reconnects: 0,
-    maxReconnects: 3
+    ready: false, qr: null, client: null, server: null, drive: null,
+    fileIds: {}, cache: { users: new Map(), codes: new Map(), groups: new Map() },
+    reconnects: 0, maxReconnects: 3
 };
 
-// Classe Auth personnalisée pour Google Drive
+// Auth Google Drive avec intervalle corrigé
 class DriveAuth extends RemoteAuth {
     constructor(options = {}) {
-        super(options);
+        super({
+            ...options,
+            backupSyncIntervalMs: CONFIG.BACKUP_INTERVAL_MS,
+            dataPath: null
+        });
         this.clientId = options.clientId || 'default';
-        this.dataPath = null;
     }
 
     async setup() {
-        console.log('🔧 Setup DriveAuth');
-        // Pas de setup local requis
+        console.log('🔧 Setup DriveAuth avec intervalle:', CONFIG.BACKUP_INTERVAL_MS);
     }
 
     async logout() {
         console.log('🔌 Logout session');
-        if (state.fileIds.SESSION) {
-            await saveToDrive('SESSION', {});
-        }
+        if (state.fileIds.SESSION) await saveToDrive('SESSION', {});
     }
 
     async getAuthEventPayload() {
         if (!state.fileIds.SESSION) return null;
-        
         try {
             const data = await loadFromDrive('SESSION');
             return data.sessionData || null;
@@ -69,12 +54,9 @@ class DriveAuth extends RemoteAuth {
 
     async setAuthEventPayload(sessionData) {
         if (!state.fileIds.SESSION || !sessionData) return;
-        
         try {
             await saveToDrive('SESSION', {
-                sessionData,
-                timestamp: new Date().toISOString(),
-                clientId: this.clientId
+                sessionData, timestamp: new Date().toISOString(), clientId: this.clientId
             });
             console.log('💾 Session sauvegardée');
         } catch (error) {
@@ -83,7 +65,7 @@ class DriveAuth extends RemoteAuth {
     }
 }
 
-// Initialisation Google Drive
+// Google Drive
 async function initGoogleDrive() {
     try {
         const credentials = {
@@ -100,15 +82,11 @@ async function initGoogleDrive() {
         };
 
         const auth = new google.auth.GoogleAuth({
-            credentials,
-            scopes: ['https://www.googleapis.com/auth/drive.file']
+            credentials, scopes: ['https://www.googleapis.com/auth/drive.file']
         });
 
         state.drive = google.drive({ version: 'v3', auth });
-        
-        // Initialiser les fichiers
         await initDriveFiles();
-        
         console.log('✅ Google Drive initialisé');
         return true;
     } catch (error) {
@@ -117,11 +95,9 @@ async function initGoogleDrive() {
     }
 }
 
-// Initialiser les fichiers sur Google Drive
 async function initDriveFiles() {
     for (const [key, fileName] of Object.entries(CONFIG.FILES)) {
         try {
-            // Chercher le fichier
             const response = await state.drive.files.list({
                 q: `name='${fileName}'${CONFIG.GDRIVE_FOLDER_ID ? ` and parents in '${CONFIG.GDRIVE_FOLDER_ID}'` : ''}`,
                 fields: 'files(id, name)'
@@ -131,7 +107,6 @@ async function initDriveFiles() {
                 state.fileIds[key] = response.data.files[0].id;
                 console.log(`📄 Trouvé: ${fileName}`);
             } else {
-                // Créer le fichier
                 const fileMetadata = {
                     name: fileName,
                     parents: CONFIG.GDRIVE_FOLDER_ID ? [CONFIG.GDRIVE_FOLDER_ID] : undefined
@@ -139,10 +114,7 @@ async function initDriveFiles() {
 
                 const file = await state.drive.files.create({
                     resource: fileMetadata,
-                    media: {
-                        mimeType: 'application/json',
-                        body: '{}'
-                    },
+                    media: { mimeType: 'application/json', body: '{}' },
                     fields: 'id'
                 });
 
@@ -153,28 +125,17 @@ async function initDriveFiles() {
             console.error(`❌ Erreur fichier ${fileName}:`, error.message);
         }
     }
-
-    // Charger le cache
     await loadCache();
 }
 
-// Charger données depuis Google Drive
 async function loadFromDrive(fileKey) {
     try {
         const fileId = state.fileIds[fileKey];
         if (!fileId) throw new Error(`Fichier ${fileKey} non trouvé`);
 
-        const response = await state.drive.files.get({
-            fileId: fileId,
-            alt: 'media'
-        });
-
-        // Gérer différents types de réponse
+        const response = await state.drive.files.get({ fileId: fileId, alt: 'media' });
         let data = response.data;
-        if (typeof data === 'string') {
-            data = JSON.parse(data || '{}');
-        }
-
+        if (typeof data === 'string') data = JSON.parse(data || '{}');
         return data || {};
     } catch (error) {
         console.error(`❌ Erreur chargement ${fileKey}:`, error.message);
@@ -182,7 +143,6 @@ async function loadFromDrive(fileKey) {
     }
 }
 
-// Sauvegarder données sur Google Drive
 async function saveToDrive(fileKey, data) {
     try {
         const fileId = state.fileIds[fileKey];
@@ -190,10 +150,7 @@ async function saveToDrive(fileKey, data) {
 
         await state.drive.files.update({
             fileId: fileId,
-            media: {
-                mimeType: 'application/json',
-                body: JSON.stringify(data, null, 2)
-            }
+            media: { mimeType: 'application/json', body: JSON.stringify(data, null, 2) }
         });
 
         console.log(`💾 ${fileKey} sauvegardé`);
@@ -204,13 +161,10 @@ async function saveToDrive(fileKey, data) {
     }
 }
 
-// Charger cache depuis Google Drive
 async function loadCache() {
     try {
         const [users, codes, groups] = await Promise.all([
-            loadFromDrive('USERS'),
-            loadFromDrive('CODES'),
-            loadFromDrive('GROUPS')
+            loadFromDrive('USERS'), loadFromDrive('CODES'), loadFromDrive('GROUPS')
         ]);
 
         state.cache.users = new Map(Object.entries(users));
@@ -223,21 +177,12 @@ async function loadCache() {
     }
 }
 
-// Sauvegarder cache
 async function saveCache(type = 'all') {
     try {
         const saves = [];
-        
-        if (type === 'all' || type === 'users') {
-            saves.push(saveToDrive('USERS', Object.fromEntries(state.cache.users)));
-        }
-        if (type === 'all' || type === 'codes') {
-            saves.push(saveToDrive('CODES', Object.fromEntries(state.cache.codes)));
-        }
-        if (type === 'all' || type === 'groups') {
-            saves.push(saveToDrive('GROUPS', Object.fromEntries(state.cache.groups)));
-        }
-
+        if (type === 'all' || type === 'users') saves.push(saveToDrive('USERS', Object.fromEntries(state.cache.users)));
+        if (type === 'all' || type === 'codes') saves.push(saveToDrive('CODES', Object.fromEntries(state.cache.codes)));
+        if (type === 'all' || type === 'groups') saves.push(saveToDrive('GROUPS', Object.fromEntries(state.cache.groups)));
         await Promise.all(saves);
         return true;
     } catch (error) {
@@ -246,13 +191,22 @@ async function saveCache(type = 'all') {
     }
 }
 
-// Nettoyage des données expirées
+// Utilitaires
+function generateCode() {
+    const chars = 'ABCDEFGHJKLMNPQRTUVWXYZ23456789';
+    let code = '';
+    for (let i = 0; i < 8; i++) {
+        if (i === 4) code += '-';
+        code += chars[Math.floor(Math.random() * chars.length)];
+    }
+    return code;
+}
+
 async function cleanup() {
     try {
         let cleaned = 0;
         const now = new Date();
         
-        // Nettoyer codes expirés
         for (const [phone, data] of state.cache.codes) {
             if (new Date(data.expiresAt) < now) {
                 state.cache.codes.delete(phone);
@@ -260,7 +214,6 @@ async function cleanup() {
             }
         }
         
-        // Désactiver utilisateurs expirés
         for (const [phone, data] of state.cache.users) {
             if (data.active && data.activatedAt) {
                 const days = (now - new Date(data.activatedAt)) / 86400000;
@@ -280,29 +233,15 @@ async function cleanup() {
     }
 }
 
-// Générateur de code
-function generateCode() {
-    const chars = 'ABCDEFGHJKLMNPQRTUVWXYZ23456789';
-    let code = '';
-    for (let i = 0; i < 8; i++) {
-        if (i === 4) code += '-';
-        code += chars[Math.floor(Math.random() * chars.length)];
-    }
-    return code;
-}
-
 // Base de données
 const db = {
     async createCode(phone) {
         const code = generateCode();
         const data = {
-            phone,
-            code,
-            used: false,
+            phone, code, used: false,
             expiresAt: new Date(Date.now() + CONFIG.CODE_EXPIRY_HOURS * 3600000).toISOString(),
             createdAt: new Date().toISOString()
         };
-        
         state.cache.codes.set(phone, data);
         await saveCache('codes');
         return code;
@@ -311,16 +250,13 @@ const db = {
     async validateCode(phone, inputCode) {
         const data = state.cache.codes.get(phone);
         if (!data || data.used || new Date(data.expiresAt) < new Date()) return false;
-        
         if (data.code.replace('-', '') !== inputCode.replace(/[-\s]/g, '').toUpperCase()) return false;
         
-        // Marquer utilisé et activer utilisateur
         data.used = true;
         state.cache.codes.set(phone, data);
         
         const userData = {
-            phone,
-            active: true,
+            phone, active: true,
             activatedAt: new Date().toISOString(),
             createdAt: new Date().toISOString()
         };
@@ -341,18 +277,14 @@ const db = {
             await saveCache('users');
             return false;
         }
-        
         return true;
     },
 
     async addGroup(groupId, name, addedBy) {
         if (state.cache.groups.has(groupId)) return false;
-        
         state.cache.groups.set(groupId, {
-            groupId, name, addedBy,
-            addedAt: new Date().toISOString()
+            groupId, name, addedBy, addedAt: new Date().toISOString()
         });
-        
         await saveCache('groups');
         return true;
     },
@@ -360,30 +292,18 @@ const db = {
     async getUserGroups(phone) {
         const groups = [];
         for (const [id, data] of state.cache.groups) {
-            if (data.addedBy === phone) {
-                groups.push({ group_id: id, name: data.name });
-            }
+            if (data.addedBy === phone) groups.push({ group_id: id, name: data.name });
         }
         return groups;
     },
 
     getStats() {
-        let activeUsers = 0;
-        let usedCodes = 0;
-        
-        for (const [, data] of state.cache.users) {
-            if (data.active) activeUsers++;
-        }
-        
-        for (const [, data] of state.cache.codes) {
-            if (data.used) usedCodes++;
-        }
-        
+        let activeUsers = 0, usedCodes = 0;
+        for (const [, data] of state.cache.users) if (data.active) activeUsers++;
+        for (const [, data] of state.cache.codes) if (data.used) usedCodes++;
         return {
-            total_users: state.cache.users.size,
-            active_users: activeUsers,
-            total_codes: state.cache.codes.size,
-            used_codes: usedCodes,
+            total_users: state.cache.users.size, active_users: activeUsers,
+            total_codes: state.cache.codes.size, used_codes: usedCodes,
             total_groups: state.cache.groups.size
         };
     }
@@ -407,24 +327,18 @@ app.get('/health', (req, res) => {
     res.json({ 
         status: state.ready ? 'online' : 'offline',
         uptime: Math.floor(process.uptime()),
-        cache: {
-            users: state.cache.users.size,
-            codes: state.cache.codes.size,
-            groups: state.cache.groups.size
-        }
+        cache: { users: state.cache.users.size, codes: state.cache.codes.size, groups: state.cache.groups.size }
     });
 });
 
-// Reconnexion
+// Client WhatsApp
 async function reconnect() {
     if (state.reconnects >= state.maxReconnects) {
         console.log('❌ Limite reconnexion atteinte');
         return;
     }
-
     state.reconnects++;
     console.log(`🔄 Reconnexion ${state.reconnects}/${state.maxReconnects}`);
-
     try {
         if (state.client) await state.client.destroy();
         await new Promise(r => setTimeout(r, 5000));
@@ -434,7 +348,6 @@ async function reconnect() {
     }
 }
 
-// Initialisation client WhatsApp
 async function initClient() {
     state.client = new Client({
         authStrategy: new DriveAuth({ clientId: 'bot-drive' }),
@@ -465,7 +378,6 @@ async function initClient() {
         state.ready = true;
         state.qr = null;
         console.log('🎉 BOT PRÊT!');
-        
         setTimeout(async () => {
             try {
                 await state.client.sendMessage(CONFIG.ADMIN_NUMBER, `🎉 *BOT EN LIGNE*\n☁️ Google Drive\n🕒 ${new Date().toLocaleString()}`);
@@ -479,7 +391,6 @@ async function initClient() {
         if (reason !== 'LOGOUT') setTimeout(reconnect, 15000);
     });
 
-    // Messages
     state.client.on('message', async (msg) => {
         if (!state.ready || !msg.body || !msg.body.startsWith('/')) return;
         
@@ -496,15 +407,12 @@ async function initClient() {
                 if (cmd.startsWith('/gencode ')) {
                     const number = text.substring(9).trim();
                     if (!number) return msg.reply('❌ Usage: /gencode [numéro]');
-                    
                     const targetPhone = number.includes('@') ? number : `${number}@c.us`;
                     const code = await db.createCode(targetPhone);
                     await msg.reply(`✅ *CODE*\n👤 ${number}\n🔑 ${code}\n⏰ 24h`);
-                    
                 } else if (cmd === '/stats') {
                     const stats = db.getStats();
                     await msg.reply(`📊 *STATS*\n👥 ${stats.total_users}\n✅ ${stats.active_users}\n🔑 ${stats.total_codes}/${stats.used_codes}\n📢 ${stats.total_groups}`);
-                    
                 } else if (cmd === '/backup') {
                     await saveCache();
                     await msg.reply('✅ Backup effectué!');
@@ -516,7 +424,6 @@ async function initClient() {
             if (cmd.startsWith('/activate ')) {
                 const code = text.substring(10).trim();
                 if (!code) return msg.reply('❌ Usage: /activate XXXX-XXXX');
-                
                 if (await db.validateCode(phone, code)) {
                     await msg.reply(`🎉 *ACTIVÉ!*\n📋 Commandes:\n• /broadcast [msg]\n• /addgroup\n• /status`);
                 } else {
@@ -536,26 +443,20 @@ async function initClient() {
                 const remaining = Math.ceil(CONFIG.USAGE_DAYS - (Date.now() - new Date(userData.activatedAt)) / 86400000);
                 const groups = await db.getUserGroups(phone);
                 await msg.reply(`📊 *STATUT*\n🟢 Actif\n📅 ${remaining} jours\n📢 ${groups.length} groupes`);
-                
             } else if (cmd === '/addgroup') {
                 const chat = await msg.getChat();
                 if (!chat.isGroup) return msg.reply('❌ Uniquement dans les groupes!');
-                
                 const added = await db.addGroup(chat.id._serialized, chat.name, phone);
                 await msg.reply(added ? `✅ Groupe ajouté: ${chat.name}` : `ℹ️ Déjà enregistré`);
-                
             } else if (cmd.startsWith('/broadcast ')) {
                 const message = text.substring(11).trim();
                 if (!message) return msg.reply('❌ Usage: /broadcast [message]');
-                
                 const groups = await db.getUserGroups(phone);
                 if (!groups.length) return msg.reply('❌ Aucun groupe!');
-                
                 await msg.reply(`🚀 Diffusion vers ${groups.length} groupe(s)...`);
                 
                 let success = 0;
                 const senderName = contact.pushname || 'Utilisateur';
-                
                 for (const group of groups) {
                     try {
                         const fullMsg = `📢 *DIFFUSION*\n👤 ${senderName}\n\n${message}`;
@@ -564,14 +465,11 @@ async function initClient() {
                         await new Promise(r => setTimeout(r, 2000));
                     } catch (e) {}
                 }
-                
                 await msg.reply(`📊 *RÉSULTAT*\n✅ ${success}/${groups.length}`);
-                
             } else if (cmd === '/help') {
                 const groups = await db.getUserGroups(phone);
                 await msg.reply(`🤖 *COMMANDES*\n• /broadcast [msg]\n• /addgroup\n• /status\n• /help\n\n📊 ${groups.length} groupe(s)`);
             }
-            
         } catch (error) {
             console.error('❌ Erreur message:', error.message);
         }
@@ -581,15 +479,14 @@ async function initClient() {
 }
 
 // Tâches périodiques
-setInterval(cleanup, 3600000); // Nettoyage 1h
-setInterval(() => saveCache(), 1800000); // Sauvegarde 30min
-setInterval(() => console.log(`💗 ${Math.floor(process.uptime())}s - ${state.ready ? 'ONLINE' : 'OFFLINE'} - ☁️ Drive`), 300000); // Keepalive 5min
+setInterval(cleanup, 3600000); // 1h
+setInterval(() => saveCache(), CONFIG.BACKUP_INTERVAL_MS * 30); // 30min
+setInterval(() => console.log(`💗 ${Math.floor(process.uptime())}s - ${state.ready ? 'ONLINE' : 'OFFLINE'} - ☁️ Drive`), 300000); // 5min
 
 // Arrêt propre
 async function shutdown() {
     console.log('🛑 Arrêt...');
     await saveCache();
-    
     if (state.client && state.ready) {
         try {
             await state.client.sendMessage(CONFIG.ADMIN_NUMBER, '🛑 Bot arrêté');
@@ -597,7 +494,6 @@ async function shutdown() {
             await state.client.destroy();
         } catch (e) {}
     }
-    
     if (state.server) state.server.close();
     process.exit(0);
 }
@@ -608,16 +504,13 @@ process.on('SIGINT', shutdown);
 // Démarrage
 async function start() {
     console.log('🚀 DÉMARRAGE BOT');
-    
     if (!(await initGoogleDrive())) {
         console.error('❌ Échec Google Drive');
         process.exit(1);
     }
-    
     state.server = app.listen(CONFIG.PORT, '0.0.0.0', () => {
         console.log(`🌐 Port ${CONFIG.PORT}`);
     });
-    
     await initClient();
 }
 
