@@ -1,112 +1,84 @@
-const { Client, LocalAuth, RemoteAuth } = require('whatsapp-web.js');
+const { Client, RemoteAuth } = require('whatsapp-web.js');
 const QRCode = require('qrcode');
 const express = require('express');
 const { google } = require('googleapis');
-const fs = require('fs').promises;
-const path = require('path');
 
-// Configuration centralisée 
+// Configuration centralisée
 const CONFIG = {
     ADMIN_NUMBER: '237651104356@c.us',
     PORT: process.env.PORT || 3000,
     USAGE_DAYS: 30,
     CODE_EXPIRY_HOURS: 24,
-    QR_TIMEOUT: 120000,
-    SESSION_CHECK_INTERVAL: 300000, // 5 minutes
-    // Configuration Google Drive
-    GDRIVE: {
-        PARENT_FOLDER_ID: process.env.GDRIVE_FOLDER_ID || null,
-        FILES: {
-            USERS: 'users.json',
-            CODES: 'codes.json',
-            GROUPS: 'groups.json',
-            SESSION: 'whatsapp_session.json' // Nouveau fichier pour la session
-        }
+    GDRIVE_FOLDER_ID: process.env.GDRIVE_FOLDER_ID || null,
+    FILES: {
+        USERS: 'users.json',
+        CODES: 'codes.json',
+        GROUPS: 'groups.json',
+        SESSION: 'session.json'
     }
 };
 
-// État global simplifié
+// État global
 const state = {
     ready: false,
     qr: null,
     client: null,
     server: null,
-    lastActivity: Date.now(),
-    reconnectAttempts: 0,
-    maxReconnectAttempts: 5,
-    // Cache en mémoire pour performance
+    drive: null,
+    fileIds: {},
     cache: {
         users: new Map(),
         codes: new Map(),
         groups: new Map()
     },
-    // Google Drive
-    drive: null,
-    driveFiles: {
-        users: null,
-        codes: null,
-        groups: null,
-        session: null
-    },
-    // Session management
-    sessionData: null,
-    isRestoring: false
+    reconnects: 0,
+    maxReconnects: 3
 };
 
-// Classe pour gérer la session sur Google Drive
-class DriveSessionStore {
-    constructor(drive, fileId) {
-        this.drive = drive;
-        this.fileId = fileId;
+// Classe Auth personnalisée pour Google Drive
+class DriveAuth extends RemoteAuth {
+    constructor(options = {}) {
+        super(options);
+        this.clientId = options.clientId || 'default';
+        this.dataPath = null;
     }
 
-    async save(sessionData) {
-        try {
-            const data = JSON.stringify(sessionData, null, 2);
-            
-            await this.drive.files.update({
-                fileId: this.fileId,
-                media: {
-                    mimeType: 'application/json',
-                    body: data
-                }
-            });
-            
-            console.log('💾 Session sauvegardée sur Drive');
-            return true;
-        } catch (error) {
-            console.error('❌ Erreur sauvegarde session:', error.message);
-            return false;
+    async setup() {
+        console.log('🔧 Setup DriveAuth');
+        // Pas de setup local requis
+    }
+
+    async logout() {
+        console.log('🔌 Logout session');
+        if (state.fileIds.SESSION) {
+            await saveToDrive('SESSION', {});
         }
     }
 
-    async extract() {
+    async getAuthEventPayload() {
+        if (!state.fileIds.SESSION) return null;
+        
         try {
-            const response = await this.drive.files.get({
-                fileId: this.fileId,
-                alt: 'media'
-            });
-
-            const data = typeof response.data === 'string' ? 
-                JSON.parse(response.data || '{}') : 
-                (response.data || {});
-
-            console.log('📥 Session récupérée depuis Drive');
-            return data;
+            const data = await loadFromDrive('SESSION');
+            return data.sessionData || null;
         } catch (error) {
             console.error('❌ Erreur récupération session:', error.message);
-            return {};
+            return null;
         }
     }
 
-    async delete() {
+    async setAuthEventPayload(sessionData) {
+        if (!state.fileIds.SESSION || !sessionData) return;
+        
         try {
-            await this.save({});
-            console.log('🗑️ Session supprimée du Drive');
-            return true;
+            await saveToDrive('SESSION', {
+                sessionData,
+                timestamp: new Date().toISOString(),
+                clientId: this.clientId
+            });
+            console.log('💾 Session sauvegardée');
         } catch (error) {
-            console.error('❌ Erreur suppression session:', error.message);
-            return false;
+            console.error('❌ Erreur sauvegarde session:', error.message);
         }
     }
 }
@@ -114,7 +86,6 @@ class DriveSessionStore {
 // Initialisation Google Drive
 async function initGoogleDrive() {
     try {
-        // Créer les credentials depuis les variables d'environnement
         const credentials = {
             type: process.env.GOOGLE_TYPE,
             project_id: process.env.GOOGLE_PROJECT_ID,
@@ -128,17 +99,16 @@ async function initGoogleDrive() {
             client_x509_cert_url: process.env.GOOGLE_CLIENT_X509_CERT_URL
         };
 
-        // Authentification avec Google
         const auth = new google.auth.GoogleAuth({
             credentials,
             scopes: ['https://www.googleapis.com/auth/drive.file']
         });
 
         state.drive = google.drive({ version: 'v3', auth });
-
-        // Vérifier les fichiers existants ou les créer
+        
+        // Initialiser les fichiers
         await initDriveFiles();
-
+        
         console.log('✅ Google Drive initialisé');
         return true;
     } catch (error) {
@@ -149,199 +119,160 @@ async function initGoogleDrive() {
 
 // Initialiser les fichiers sur Google Drive
 async function initDriveFiles() {
-    try {
-        for (const [key, fileName] of Object.entries(CONFIG.GDRIVE.FILES)) {
-            // Chercher le fichier existant
+    for (const [key, fileName] of Object.entries(CONFIG.FILES)) {
+        try {
+            // Chercher le fichier
             const response = await state.drive.files.list({
-                q: `name='${fileName}'${CONFIG.GDRIVE.PARENT_FOLDER_ID ? ` and parents in '${CONFIG.GDRIVE.PARENT_FOLDER_ID}'` : ''}`,
+                q: `name='${fileName}'${CONFIG.GDRIVE_FOLDER_ID ? ` and parents in '${CONFIG.GDRIVE_FOLDER_ID}'` : ''}`,
                 fields: 'files(id, name)'
             });
 
             if (response.data.files.length > 0) {
-                // Fichier trouvé
-                state.driveFiles[key] = response.data.files[0].id;
-                console.log(`📄 Trouvé: ${fileName} (${state.driveFiles[key]})`);
+                state.fileIds[key] = response.data.files[0].id;
+                console.log(`📄 Trouvé: ${fileName}`);
             } else {
                 // Créer le fichier
                 const fileMetadata = {
                     name: fileName,
-                    parents: CONFIG.GDRIVE.PARENT_FOLDER_ID ? [CONFIG.GDRIVE.PARENT_FOLDER_ID] : undefined
-                };
-
-                const media = {
-                    mimeType: 'application/json',
-                    body: key === 'session' ? '{}' : '{}'
+                    parents: CONFIG.GDRIVE_FOLDER_ID ? [CONFIG.GDRIVE_FOLDER_ID] : undefined
                 };
 
                 const file = await state.drive.files.create({
                     resource: fileMetadata,
-                    media: media,
+                    media: {
+                        mimeType: 'application/json',
+                        body: '{}'
+                    },
                     fields: 'id'
                 });
 
-                state.driveFiles[key] = file.data.id;
-                console.log(`📄 Créé: ${fileName} (${state.driveFiles[key]})`);
+                state.fileIds[key] = file.data.id;
+                console.log(`📄 Créé: ${fileName}`);
             }
+        } catch (error) {
+            console.error(`❌ Erreur fichier ${fileName}:`, error.message);
+        }
+    }
+
+    // Charger le cache
+    await loadCache();
+}
+
+// Charger données depuis Google Drive
+async function loadFromDrive(fileKey) {
+    try {
+        const fileId = state.fileIds[fileKey];
+        if (!fileId) throw new Error(`Fichier ${fileKey} non trouvé`);
+
+        const response = await state.drive.files.get({
+            fileId: fileId,
+            alt: 'media'
+        });
+
+        // Gérer différents types de réponse
+        let data = response.data;
+        if (typeof data === 'string') {
+            data = JSON.parse(data || '{}');
         }
 
-        // Charger les données en cache
-        await loadCache();
+        return data || {};
+    } catch (error) {
+        console.error(`❌ Erreur chargement ${fileKey}:`, error.message);
+        return {};
+    }
+}
 
-        // Nettoyage automatique au démarrage
-        await cleanupExpiredData();
+// Sauvegarder données sur Google Drive
+async function saveToDrive(fileKey, data) {
+    try {
+        const fileId = state.fileIds[fileKey];
+        if (!fileId) throw new Error(`Fichier ${fileKey} non trouvé`);
 
+        await state.drive.files.update({
+            fileId: fileId,
+            media: {
+                mimeType: 'application/json',
+                body: JSON.stringify(data, null, 2)
+            }
+        });
+
+        console.log(`💾 ${fileKey} sauvegardé`);
         return true;
     } catch (error) {
-        console.error('❌ Erreur init fichiers Drive:', error.message);
+        console.error(`❌ Erreur sauvegarde ${fileKey}:`, error.message);
         return false;
     }
 }
 
-// Custom LocalAuth qui utilise Google Drive
-class DriveAuth {
-    constructor(options = {}) {
-        this.clientId = options.clientId || 'default';
-        this.sessionStore = null;
-    }
-
-    async logout() {
-        if (this.sessionStore) {
-            await this.sessionStore.delete();
-        }
-        state.sessionData = null;
-        console.log('🔌 Session déconnectée');
-    }
-
-    async getAuthEventPayload() {
-        return state.sessionData;
-    }
-
-    async setAuthEventPayload(sessionData) {
-        state.sessionData = sessionData;
-        
-        if (this.sessionStore && sessionData) {
-            await this.sessionStore.save({
-                sessionData,
-                timestamp: new Date().toISOString(),
-                clientId: this.clientId
-            });
-        }
-    }
-
-    async beforeConnect() {
-        // Initialiser le store de session
-        if (!this.sessionStore && state.driveFiles.session) {
-            this.sessionStore = new DriveSessionStore(state.drive, state.driveFiles.session);
-        }
-
-        // Tenter de récupérer une session existante
-        if (this.sessionStore && !state.sessionData) {
-            try {
-                const savedSession = await this.sessionStore.extract();
-                
-                if (savedSession.sessionData && savedSession.clientId === this.clientId) {
-                    state.sessionData = savedSession.sessionData;
-                    state.isRestoring = true;
-                    console.log('🔄 Restauration session depuis Drive...');
-                    return;
-                }
-            } catch (error) {
-                console.error('❌ Erreur récupération session:', error.message);
-            }
-        }
-
-        console.log('🆕 Nouvelle session requise');
-    }
-}
-
-// Charger toutes les données depuis Google Drive
+// Charger cache depuis Google Drive
 async function loadCache() {
     try {
-        const promises = [];
-        
-        // Charger seulement les fichiers de données (pas la session)
-        for (const [key, fileId] of Object.entries(state.driveFiles)) {
-            if (key !== 'session') {
-                promises.push(
-                    state.drive.files.get({
-                        fileId: fileId,
-                        alt: 'media'
-                    }).then(response => ({ key, data: response.data }))
-                );
-            }
-        }
+        const [users, codes, groups] = await Promise.all([
+            loadFromDrive('USERS'),
+            loadFromDrive('CODES'),
+            loadFromDrive('GROUPS')
+        ]);
 
-        const results = await Promise.all(promises);
-        
-        for (const { key, data } of results) {
-            const parsedData = typeof data === 'string' ? JSON.parse(data || '{}') : (data || {});
-            state.cache[key] = new Map(Object.entries(parsedData));
-        }
+        state.cache.users = new Map(Object.entries(users));
+        state.cache.codes = new Map(Object.entries(codes));
+        state.cache.groups = new Map(Object.entries(groups));
 
-        console.log(`📊 Cache chargé depuis Drive: ${state.cache.users.size} users, ${state.cache.codes.size} codes, ${state.cache.groups.size} groups`);
+        console.log(`📊 Cache chargé: ${state.cache.users.size} users, ${state.cache.codes.size} codes, ${state.cache.groups.size} groups`);
     } catch (error) {
-        console.error('❌ Erreur chargement cache Drive:', error.message);
+        console.error('❌ Erreur chargement cache:', error.message);
     }
 }
 
-// Sauvegarder les données sur Google Drive
-async function saveData(type) {
+// Sauvegarder cache
+async function saveCache(type = 'all') {
     try {
-        if (!state.driveFiles[type] || type === 'session') {
-            console.error(`❌ ID fichier ${type} manquant ou non autorisé`);
-            return false;
+        const saves = [];
+        
+        if (type === 'all' || type === 'users') {
+            saves.push(saveToDrive('USERS', Object.fromEntries(state.cache.users)));
+        }
+        if (type === 'all' || type === 'codes') {
+            saves.push(saveToDrive('CODES', Object.fromEntries(state.cache.codes)));
+        }
+        if (type === 'all' || type === 'groups') {
+            saves.push(saveToDrive('GROUPS', Object.fromEntries(state.cache.groups)));
         }
 
-        const data = Object.fromEntries(state.cache[type]);
-        const jsonData = JSON.stringify(data, null, 2);
-
-        await state.drive.files.update({
-            fileId: state.driveFiles[type],
-            media: {
-                mimeType: 'application/json',
-                body: jsonData
-            }
-        });
-
-        console.log(`💾 ${type} sauvegardé sur Drive`);
+        await Promise.all(saves);
         return true;
     } catch (error) {
-        console.error(`❌ Erreur sauvegarde ${type} sur Drive:`, error.message);
+        console.error('❌ Erreur sauvegarde cache:', error.message);
         return false;
     }
 }
 
 // Nettoyage des données expirées
-async function cleanupExpiredData() {
+async function cleanup() {
     try {
-        const now = new Date();
         let cleaned = 0;
+        const now = new Date();
         
-        // Nettoyer les codes expirés
-        for (const [phone, codeData] of state.cache.codes) {
-            if (new Date(codeData.expiresAt) < now) {
+        // Nettoyer codes expirés
+        for (const [phone, data] of state.cache.codes) {
+            if (new Date(data.expiresAt) < now) {
                 state.cache.codes.delete(phone);
                 cleaned++;
             }
         }
         
-        // Désactiver les utilisateurs expirés
-        for (const [phone, userData] of state.cache.users) {
-            if (userData.active && userData.activatedAt) {
-                const daysSince = (now.getTime() - new Date(userData.activatedAt).getTime()) / 86400000;
-                if (daysSince > CONFIG.USAGE_DAYS) {
-                    userData.active = false;
-                    state.cache.users.set(phone, userData);
+        // Désactiver utilisateurs expirés
+        for (const [phone, data] of state.cache.users) {
+            if (data.active && data.activatedAt) {
+                const days = (now - new Date(data.activatedAt)) / 86400000;
+                if (days > CONFIG.USAGE_DAYS) {
+                    data.active = false;
                     cleaned++;
                 }
             }
         }
         
         if (cleaned > 0) {
-            await Promise.all([
-                saveData('codes'),
-                saveData('users')
-            ]);
+            await saveCache();
             console.log(`🧹 ${cleaned} éléments nettoyés`);
         }
     } catch (error) {
@@ -349,7 +280,7 @@ async function cleanupExpiredData() {
     }
 }
 
-// Générateur de code optimisé
+// Générateur de code
 function generateCode() {
     const chars = 'ABCDEFGHJKLMNPQRTUVWXYZ23456789';
     let code = '';
@@ -360,299 +291,197 @@ function generateCode() {
     return code;
 }
 
-// Fonctions base de données Google Drive
+// Base de données
 const db = {
     async createCode(phone) {
         const code = generateCode();
-        const expiresAt = new Date(Date.now() + CONFIG.CODE_EXPIRY_HOURS * 3600000);
-        
-        const codeData = {
+        const data = {
             phone,
             code,
             used: false,
-            expiresAt: expiresAt.toISOString(),
+            expiresAt: new Date(Date.now() + CONFIG.CODE_EXPIRY_HOURS * 3600000).toISOString(),
             createdAt: new Date().toISOString()
         };
         
-        state.cache.codes.set(phone, codeData);
-        await saveData('codes');
-        
+        state.cache.codes.set(phone, data);
+        await saveCache('codes');
         return code;
     },
 
     async validateCode(phone, inputCode) {
-        try {
-            const codeData = state.cache.codes.get(phone);
-            
-            if (!codeData || codeData.used || new Date(codeData.expiresAt) < new Date()) {
-                return false;
-            }
-            
-            if (codeData.code.replace('-', '') !== inputCode.replace(/[-\s]/g, '').toUpperCase()) {
-                return false;
-            }
-            
-            // Marquer le code comme utilisé
-            codeData.used = true;
-            state.cache.codes.set(phone, codeData);
-            
-            // Activer l'utilisateur
-            const userData = state.cache.users.get(phone) || {};
-            userData.phone = phone;
-            userData.active = true;
-            userData.activatedAt = new Date().toISOString();
-            userData.createdAt = userData.createdAt || new Date().toISOString();
-            
-            state.cache.users.set(phone, userData);
-            
-            // Sauvegarder les deux fichiers
-            await Promise.all([
-                saveData('codes'),
-                saveData('users')
-            ]);
-            
-            return true;
-        } catch (error) {
-            console.error('❌ Erreur validation:', error.message);
-            return false;
-        }
+        const data = state.cache.codes.get(phone);
+        if (!data || data.used || new Date(data.expiresAt) < new Date()) return false;
+        
+        if (data.code.replace('-', '') !== inputCode.replace(/[-\s]/g, '').toUpperCase()) return false;
+        
+        // Marquer utilisé et activer utilisateur
+        data.used = true;
+        state.cache.codes.set(phone, data);
+        
+        const userData = {
+            phone,
+            active: true,
+            activatedAt: new Date().toISOString(),
+            createdAt: new Date().toISOString()
+        };
+        
+        state.cache.users.set(phone, userData);
+        await saveCache();
+        return true;
     },
 
     async isAuthorized(phone) {
-        try {
-            const userData = state.cache.users.get(phone);
-            
-            if (!userData || !userData.active) return false;
-            
-            const daysSince = (Date.now() - new Date(userData.activatedAt).getTime()) / 86400000;
-            
-            if (daysSince > CONFIG.USAGE_DAYS) {
-                userData.active = false;
-                state.cache.users.set(phone, userData);
-                await saveData('users');
-                return false;
-            }
-            
-            return true;
-        } catch (error) {
-            console.error('❌ Erreur autorisation:', error.message);
+        const data = state.cache.users.get(phone);
+        if (!data || !data.active) return false;
+        
+        const days = (Date.now() - new Date(data.activatedAt)) / 86400000;
+        if (days > CONFIG.USAGE_DAYS) {
+            data.active = false;
+            state.cache.users.set(phone, data);
+            await saveCache('users');
             return false;
         }
+        
+        return true;
     },
 
     async addGroup(groupId, name, addedBy) {
-        try {
-            if (state.cache.groups.has(groupId)) {
-                return false; // Déjà existe
-            }
-            
-            const groupData = {
-                groupId,
-                name,
-                addedBy,
-                addedAt: new Date().toISOString()
-            };
-            
-            state.cache.groups.set(groupId, groupData);
-            await saveData('groups');
-            
-            return true;
-        } catch (error) {
-            console.error('❌ Erreur ajout groupe:', error.message);
-            return false;
-        }
+        if (state.cache.groups.has(groupId)) return false;
+        
+        state.cache.groups.set(groupId, {
+            groupId, name, addedBy,
+            addedAt: new Date().toISOString()
+        });
+        
+        await saveCache('groups');
+        return true;
     },
 
     async getUserGroups(phone) {
-        try {
-            const userGroups = [];
-            
-            for (const [groupId, groupData] of state.cache.groups) {
-                if (groupData.addedBy === phone) {
-                    userGroups.push({
-                        group_id: groupData.groupId,
-                        name: groupData.name
-                    });
-                }
+        const groups = [];
+        for (const [id, data] of state.cache.groups) {
+            if (data.addedBy === phone) {
+                groups.push({ group_id: id, name: data.name });
             }
-            
-            return userGroups;
-        } catch (error) {
-            console.error('❌ Erreur groupes utilisateur:', error.message);
-            return [];
         }
+        return groups;
     },
 
-    async getStats() {
-        try {
-            let activeUsers = 0;
-            let usedCodes = 0;
-            
-            // Compter les utilisateurs actifs
-            for (const [phone, userData] of state.cache.users) {
-                if (userData.active) activeUsers++;
-            }
-            
-            // Compter les codes utilisés
-            for (const [phone, codeData] of state.cache.codes) {
-                if (codeData.used) usedCodes++;
-            }
-            
-            return {
-                total_users: state.cache.users.size,
-                active_users: activeUsers,
-                total_codes: state.cache.codes.size,
-                used_codes: usedCodes,
-                total_groups: state.cache.groups.size
-            };
-        } catch (error) {
-            console.error('❌ Erreur stats:', error.message);
-            return {
-                total_users: 0,
-                active_users: 0,
-                total_codes: 0,
-                used_codes: 0,
-                total_groups: 0
-            };
+    getStats() {
+        let activeUsers = 0;
+        let usedCodes = 0;
+        
+        for (const [, data] of state.cache.users) {
+            if (data.active) activeUsers++;
         }
+        
+        for (const [, data] of state.cache.codes) {
+            if (data.used) usedCodes++;
+        }
+        
+        return {
+            total_users: state.cache.users.size,
+            active_users: activeUsers,
+            total_codes: state.cache.codes.size,
+            used_codes: usedCodes,
+            total_groups: state.cache.groups.size
+        };
     }
 };
 
-// Interface web minimaliste
+// Interface web
 const app = express();
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json());
 
 app.get('/', (req, res) => {
-    const sessionStatus = state.sessionData ? '🔑 Session Active' : '❌ Pas de Session';
-    const reconnectInfo = state.reconnectAttempts > 0 ? `🔄 Tentatives: ${state.reconnectAttempts}/${state.maxReconnectAttempts}` : '';
-    
     const html = state.ready ? 
-        `<h1 style="color:green">✅ Bot En Ligne</h1><p>🕒 ${new Date().toLocaleString()}</p><p>☁️ Google Drive + Session Persistante</p><p>${sessionStatus}</p>` :
+        `<h1 style="color:green">✅ Bot En Ligne</h1><p>☁️ Google Drive</p><p>🕒 ${new Date().toLocaleString()}</p>` :
         state.qr ? 
-        `<h1>📱 Scanner QR Code</h1><p>${sessionStatus}</p><img src="data:image/png;base64,${state.qr}"><script>setTimeout(()=>location.reload(),30000)</script>` :
-        `<h1>🔄 Initialisation...</h1><p>${sessionStatus}</p><p>${reconnectInfo}</p><script>setTimeout(()=>location.reload(),10000)</script>`;
+        `<h1>📱 Scanner QR</h1><img src="data:image/png;base64,${state.qr}"><script>setTimeout(()=>location.reload(),30000)</script>` :
+        `<h1>🔄 Chargement...</h1><script>setTimeout(()=>location.reload(),10000)</script>`;
     
-    res.send(`<!DOCTYPE html><html><head><title>WhatsApp Bot</title><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font-family:Arial;text-align:center;background:#25D366;color:white;padding:50px}img{background:white;padding:20px;border-radius:10px}</style></head><body>${html}</body></html>`);
+    res.send(`<!DOCTYPE html><html><head><title>Bot</title><style>body{font-family:Arial;text-align:center;background:#25D366;color:white;padding:50px}img{background:white;padding:20px;border-radius:10px}</style></head><body>${html}</body></html>`);
 });
 
 app.get('/health', (req, res) => {
     res.json({ 
         status: state.ready ? 'online' : 'offline',
-        database: 'google-drive',
-        session: state.sessionData ? 'active' : 'inactive',
         uptime: Math.floor(process.uptime()),
-        timestamp: new Date().toISOString(),
-        reconnect_attempts: state.reconnectAttempts,
-        cache_size: {
+        cache: {
             users: state.cache.users.size,
             codes: state.cache.codes.size,
             groups: state.cache.groups.size
-        },
-        drive_files: state.driveFiles
+        }
     });
 });
 
-// Fonction de reconnexion intelligente
-async function attemptReconnect() {
-    if (state.reconnectAttempts >= state.maxReconnectAttempts) {
-        console.log('❌ Limite de reconnexion atteinte');
-        return false;
+// Reconnexion
+async function reconnect() {
+    if (state.reconnects >= state.maxReconnects) {
+        console.log('❌ Limite reconnexion atteinte');
+        return;
     }
 
-    state.reconnectAttempts++;
-    console.log(`🔄 Tentative de reconnexion ${state.reconnectAttempts}/${state.maxReconnectAttempts}`);
+    state.reconnects++;
+    console.log(`🔄 Reconnexion ${state.reconnects}/${state.maxReconnects}`);
 
     try {
-        if (state.client) {
-            await state.client.destroy();
-        }
-        
-        // Attendre avant de recréer le client
-        await new Promise(resolve => setTimeout(resolve, 5000));
-        
+        if (state.client) await state.client.destroy();
+        await new Promise(r => setTimeout(r, 5000));
         await initClient();
-        return true;
     } catch (error) {
         console.error('❌ Erreur reconnexion:', error.message);
-        return false;
     }
 }
 
-// Initialisation client WhatsApp avec session persistante
+// Initialisation client WhatsApp
 async function initClient() {
     state.client = new Client({
-        authStrategy: new DriveAuth({ clientId: 'whatsapp-bot-drive' }),
+        authStrategy: new DriveAuth({ clientId: 'bot-drive' }),
         puppeteer: {
             headless: true,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--single-process',
-                '--no-zygote'
-            ]
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
         }
     });
 
-    // Événements
     state.client.on('qr', async (qr) => {
-        console.log('📱 QR Code généré');
+        console.log('📱 QR généré');
         state.qr = (await QRCode.toDataURL(qr, { width: 400 })).split(',')[1];
-        setTimeout(() => { if (!state.ready) state.qr = null; }, CONFIG.QR_TIMEOUT);
+        setTimeout(() => { if (!state.ready) state.qr = null; }, 120000);
     });
 
     state.client.on('authenticated', () => {
-        console.log('🔐 Authentifié' + (state.isRestoring ? ' (session restaurée)' : ''));
+        console.log('🔐 Authentifié');
         state.qr = null;
-        state.reconnectAttempts = 0; // Reset compteur
-        state.isRestoring = false;
+        state.reconnects = 0;
     });
 
-    state.client.on('auth_failure', async (msg) => {
-        console.log('❌ Échec authentification:', msg);
-        
-        // Supprimer la session corrompue
-        if (state.client.authStrategy && state.client.authStrategy.sessionStore) {
-            await state.client.authStrategy.sessionStore.delete();
-        }
-        
-        state.sessionData = null;
-        state.ready = false;
-        
-        // Tenter une reconnexion
-        setTimeout(() => attemptReconnect(), 10000);
+    state.client.on('auth_failure', () => {
+        console.log('❌ Échec auth');
+        setTimeout(reconnect, 10000);
     });
 
     state.client.on('ready', async () => {
         state.ready = true;
         state.qr = null;
-        state.lastActivity = Date.now();
-        console.log('🎉 BOT PRÊT! Session persistante active');
+        console.log('🎉 BOT PRÊT!');
         
         setTimeout(async () => {
             try {
-                await state.client.sendMessage(CONFIG.ADMIN_NUMBER, 
-                    `🎉 *BOT EN LIGNE*\n☁️ Google Drive + Session Persistante\n🕒 ${new Date().toLocaleString()}\n🔄 Reconnexions: ${state.reconnectAttempts}`);
+                await state.client.sendMessage(CONFIG.ADMIN_NUMBER, `🎉 *BOT EN LIGNE*\n☁️ Google Drive\n🕒 ${new Date().toLocaleString()}`);
             } catch (e) {}
         }, 3000);
     });
 
-    state.client.on('disconnected', async (reason) => {
+    state.client.on('disconnected', (reason) => {
         console.log('🔌 Déconnecté:', reason);
         state.ready = false;
-        
-        // Tenter une reconnexion automatique
-        if (reason !== 'LOGOUT') {
-            setTimeout(() => attemptReconnect(), 15000);
-        }
+        if (reason !== 'LOGOUT') setTimeout(reconnect, 15000);
     });
 
-    // Traitement des messages
+    // Messages
     state.client.on('message', async (msg) => {
-        if (!state.ready || !msg.body || msg.type !== 'chat' || !msg.body.startsWith('/')) return;
-        
-        state.lastActivity = Date.now(); // Marquer l'activité
+        if (!state.ready || !msg.body || !msg.body.startsWith('/')) return;
         
         try {
             const contact = await msg.getContact();
@@ -662,9 +491,7 @@ async function initClient() {
             const text = msg.body.trim();
             const cmd = text.toLowerCase();
 
-            console.log(`📨 ${phone.replace('@c.us', '')}: ${cmd.substring(0, 30)}...`);
-
-            // Commandes admin
+            // Admin
             if (phone === CONFIG.ADMIN_NUMBER) {
                 if (cmd.startsWith('/gencode ')) {
                     const number = text.substring(9).trim();
@@ -672,31 +499,15 @@ async function initClient() {
                     
                     const targetPhone = number.includes('@') ? number : `${number}@c.us`;
                     const code = await db.createCode(targetPhone);
-                    await msg.reply(`✅ *CODE GÉNÉRÉ*\n👤 ${number}\n🔑 ${code}\n⏰ 24h\n📝 /activate ${code}`);
+                    await msg.reply(`✅ *CODE*\n👤 ${number}\n🔑 ${code}\n⏰ 24h`);
                     
                 } else if (cmd === '/stats') {
-                    const stats = await db.getStats();
-                    const uptime = Math.floor(process.uptime() / 60);
-                    await msg.reply(`📊 *STATS DRIVE*\n👥 Total: ${stats.total_users}\n✅ Actifs: ${stats.active_users}\n🔑 Codes: ${stats.total_codes}/${stats.used_codes}\n📢 Groupes: ${stats.total_groups}\n⏱️ Uptime: ${uptime}min\n🔄 Reconnexions: ${state.reconnectAttempts}`);
+                    const stats = db.getStats();
+                    await msg.reply(`📊 *STATS*\n👥 ${stats.total_users}\n✅ ${stats.active_users}\n🔑 ${stats.total_codes}/${stats.used_codes}\n📢 ${stats.total_groups}`);
                     
                 } else if (cmd === '/backup') {
-                    // Sauvegarder tout
-                    await Promise.all([
-                        saveData('users'),
-                        saveData('codes'),
-                        saveData('groups')
-                    ]);
-                    await msg.reply('✅ Backup Drive effectué!');
-                    
-                } else if (cmd === '/reset-session') {
-                    // Réinitialiser la session
-                    if (state.client.authStrategy && state.client.authStrategy.sessionStore) {
-                        await state.client.authStrategy.sessionStore.delete();
-                    }
-                    await msg.reply('🔄 Session réinitialisée. Redémarrage requis.');
-                    
-                } else if (cmd === '/help') {
-                    await msg.reply('🤖 *ADMIN*\n• /gencode [num] - Créer code\n• /stats - Statistiques\n• /backup - Sauvegarder\n• /reset-session - Reset session\n• /help - Aide\n\n☁️ Google Drive + Session Persistante');
+                    await saveCache();
+                    await msg.reply('✅ Backup effectué!');
                 }
                 return;
             }
@@ -707,40 +518,38 @@ async function initClient() {
                 if (!code) return msg.reply('❌ Usage: /activate XXXX-XXXX');
                 
                 if (await db.validateCode(phone, code)) {
-                    await msg.reply(`🎉 *ACTIVÉ!* Expire dans ${CONFIG.USAGE_DAYS} jours\n\n📋 *Commandes:*\n• /broadcast [msg] - Diffuser\n• /addgroup - Ajouter groupe\n• /status - Mon statut\n• /help - Aide`);
+                    await msg.reply(`🎉 *ACTIVÉ!*\n📋 Commandes:\n• /broadcast [msg]\n• /addgroup\n• /status`);
                 } else {
-                    await msg.reply('❌ Code invalide ou expiré');
+                    await msg.reply('❌ Code invalide');
                 }
                 return;
             }
 
             // Vérifier autorisation
             if (!(await db.isAuthorized(phone))) {
-                return msg.reply(`🔒 *Accès requis*\n📞 Contact: ${CONFIG.ADMIN_NUMBER.replace('@c.us', '')}\n🔑 /activate VOTRE-CODE`);
+                return msg.reply(`🔒 Accès requis\n📞 ${CONFIG.ADMIN_NUMBER.replace('@c.us', '')}`);
             }
 
             // Commandes utilisateur
             if (cmd === '/status') {
                 const userData = state.cache.users.get(phone);
-                const remaining = Math.ceil(CONFIG.USAGE_DAYS - (Date.now() - new Date(userData.activatedAt).getTime()) / 86400000);
+                const remaining = Math.ceil(CONFIG.USAGE_DAYS - (Date.now() - new Date(userData.activatedAt)) / 86400000);
                 const groups = await db.getUserGroups(phone);
-                await msg.reply(`📊 *STATUT*\n🟢 Actif\n📅 ${remaining} jours restants\n📢 ${groups.length} groupes\n☁️ Google Drive + Session Persistante`);
+                await msg.reply(`📊 *STATUT*\n🟢 Actif\n📅 ${remaining} jours\n📢 ${groups.length} groupes`);
                 
             } else if (cmd === '/addgroup') {
                 const chat = await msg.getChat();
                 if (!chat.isGroup) return msg.reply('❌ Uniquement dans les groupes!');
                 
                 const added = await db.addGroup(chat.id._serialized, chat.name, phone);
-                await msg.reply(added ? 
-                    `✅ *Groupe ajouté!*\n📢 ${chat.name}\n💡 /broadcast [message] pour diffuser` :
-                    `ℹ️ Groupe déjà enregistré: ${chat.name}`);
-                    
+                await msg.reply(added ? `✅ Groupe ajouté: ${chat.name}` : `ℹ️ Déjà enregistré`);
+                
             } else if (cmd.startsWith('/broadcast ')) {
                 const message = text.substring(11).trim();
                 if (!message) return msg.reply('❌ Usage: /broadcast [message]');
                 
                 const groups = await db.getUserGroups(phone);
-                if (!groups.length) return msg.reply('❌ Aucun groupe! Utilisez /addgroup d\'abord');
+                if (!groups.length) return msg.reply('❌ Aucun groupe!');
                 
                 await msg.reply(`🚀 Diffusion vers ${groups.length} groupe(s)...`);
                 
@@ -749,203 +558,72 @@ async function initClient() {
                 
                 for (const group of groups) {
                     try {
-                        const fullMsg = `📢 *DIFFUSION*\n👤 ${senderName}\n🕒 ${new Date().toLocaleString()}\n\n${message}`;
+                        const fullMsg = `📢 *DIFFUSION*\n👤 ${senderName}\n\n${message}`;
                         await state.client.sendMessage(group.group_id, fullMsg);
                         success++;
                         await new Promise(r => setTimeout(r, 2000));
                     } catch (e) {}
                 }
                 
-                await msg.reply(`📊 *RÉSULTAT*\n✅ ${success}/${groups.length} groupes\n${success > 0 ? '🎉 Diffusé!' : '❌ Échec'}`);
+                await msg.reply(`📊 *RÉSULTAT*\n✅ ${success}/${groups.length}`);
                 
             } else if (cmd === '/help') {
                 const groups = await db.getUserGroups(phone);
-                await msg.reply(`🤖 *COMMANDES*\n• /broadcast [msg] - Diffuser\n• /addgroup - Ajouter groupe\n• /status - Mon statut\n• /help - Aide\n\n📊 ${groups.length} groupe(s)\n☁️ Google Drive + Session Persistante`);
+                await msg.reply(`🤖 *COMMANDES*\n• /broadcast [msg]\n• /addgroup\n• /status\n• /help\n\n📊 ${groups.length} groupe(s)`);
             }
             
         } catch (error) {
             console.error('❌ Erreur message:', error.message);
-            try { await msg.reply('❌ Erreur temporaire'); } catch (e) {}
         }
     });
 
     await state.client.initialize();
 }
 
-// Surveillance de la connexion
-setInterval(() => {
-    if (state.ready) {
-        const inactiveTime = Date.now() - state.lastActivity;
-        
-        // Si inactif depuis plus de 30 minutes, envoyer un ping
-        if (inactiveTime > 1800000) {
-            console.log('🔔 Ping de maintien de connexion');
-            state.lastActivity = Date.now();
-            
-            // Envoyer un message silencieux à l'admin pour maintenir la connexion
-            try {
-                state.client.sendMessage(CONFIG.ADMIN_NUMBER, '🔔 Ping automatique - Bot actif')
-                    .catch(() => {}); // Ignorer les erreurs de ping
-            } catch (e) {}
-        }
-    }
-}, CONFIG.SESSION_CHECK_INTERVAL);
+// Tâches périodiques
+setInterval(cleanup, 3600000); // Nettoyage 1h
+setInterval(() => saveCache(), 1800000); // Sauvegarde 30min
+setInterval(() => console.log(`💗 ${Math.floor(process.uptime())}s - ${state.ready ? 'ONLINE' : 'OFFLINE'} - ☁️ Drive`), 300000); // Keepalive 5min
 
-// Nettoyage et sauvegarde périodiques
-setInterval(async () => {
-    try {
-        await cleanupExpiredData();
-        
-        // Sauvegarde préventive toutes les heures
-        await Promise.all([
-            saveData('users'),
-            saveData('codes'),
-            saveData('groups')
-        ]);
-        
-        console.log('💾 Sauvegarde périodique Google Drive effectuée');
-    } catch (e) {
-        console.error('❌ Erreur sauvegarde périodique:', e.message);
+// Arrêt propre
+async function shutdown() {
+    console.log('🛑 Arrêt...');
+    await saveCache();
+    
+    if (state.client && state.ready) {
+        try {
+            await state.client.sendMessage(CONFIG.ADMIN_NUMBER, '🛑 Bot arrêté');
+            await new Promise(r => setTimeout(r, 2000));
+            await state.client.destroy();
+        } catch (e) {}
     }
-}, 3600000); // 1h
+    
+    if (state.server) state.server.close();
+    process.exit(0);
+}
 
-// Keep-alive pour Render avec informations de session
-setInterval(() => {
-    const sessionStatus = state.sessionData ? 'SESSION-OK' : 'NO-SESSION';
-    console.log(`💗 Uptime: ${Math.floor(process.uptime())}s - ${state.ready ? 'ONLINE' : 'OFFLINE'} - ${sessionStatus} - ☁️ Drive (${state.cache.users.size}/${state.cache.codes.size}/${state.cache.groups.size}) - Reconnect: ${state.reconnectAttempts}`);
-}, 300000);
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
 
 // Démarrage
 async function start() {
-    console.log('🚀 DÉMARRAGE BOT WHATSAPP');
-    console.log('☁️ Base: Google Drive (100% GRATUIT)');
-    console.log('🔑 Session: Persistante sur Drive');
-    console.log('🌐 Hébergeur: Render');
+    console.log('🚀 DÉMARRAGE BOT');
     
     if (!(await initGoogleDrive())) {
-        console.error('❌ Échec initialisation Google Drive');
+        console.error('❌ Échec Google Drive');
         process.exit(1);
     }
     
     state.server = app.listen(CONFIG.PORT, '0.0.0.0', () => {
-        console.log(`🌐 Serveur port ${CONFIG.PORT}`);
+        console.log(`🌐 Port ${CONFIG.PORT}`);
     });
     
     await initClient();
 }
 
-// Arrêt propre avec sauvegarde de session
-async function shutdown() {
-    console.log('🛑 Arrêt en cours...');
-    
-    // Sauvegarder toutes les données avant l'arrêt
-    try {
-        await Promise.all([
-            saveData('users'),
-            saveData('codes'),
-            saveData('groups')
-        ]);
-        console.log('💾 Données sauvegardées sur Google Drive');
-    } catch (e) {
-        console.error('❌ Erreur sauvegarde finale:', e.message);
-    }
-    
-    // Notification d'arrêt avec préservation de session
-    if (state.client && state.ready) {
-        try {
-            await state.client.sendMessage(CONFIG.ADMIN_NUMBER, 
-                `🛑 Bot arrêté - Session préservée sur Drive\n🔑 Reconnexion automatique au redémarrage\n💾 Données sauvegardées`);
-        } catch (e) {}
-        
-        // Attendre que le message soit envoyé
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        
-        await state.client.destroy();
-    }
-    
-    if (state.server) state.server.close();
-    
-    console.log('✅ Arrêt terminé - Session préservée');
-    process.exit(0);
-}
-
-// Gestion des signaux avec sauvegarde de session
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
-
-// Gestion erreurs améliorée
-process.on('uncaughtException', async (error) => {
-    console.error('❌ Exception critique:', error.message);
-    
-    // Tenter une sauvegarde d'urgence
-    try {
-        if (state.drive && state.driveFiles.users) {
-            await Promise.all([
-                saveData('users'),
-                saveData('codes'),
-                saveData('groups')
-            ]);
-            console.log('💾 Sauvegarde d\'urgence effectuée');
-        }
-    } catch (e) {
-        console.error('❌ Échec sauvegarde d\'urgence:', e.message);
-    }
-    
-    // Redémarrer après sauvegarde
-    process.exit(1);
-});
-
-process.on('unhandledRejection', async (reason) => {
-    console.error('❌ Promise rejetée:', reason);
-    
-    // Si c'est une erreur de connexion, tenter une reconnexion
-    if (reason && reason.message && reason.message.includes('connection')) {
-        console.log('🔄 Erreur de connexion détectée, reconnexion...');
-        setTimeout(() => attemptReconnect(), 5000);
-    }
-});
-
-// Fonction utilitaire pour vérifier l'état de la session
-async function checkSessionHealth() {
-    try {
-        if (!state.client || !state.ready) {
-            return false;
-        }
-        
-        // Tester la connexion en récupérant les infos du client
-        const info = await state.client.info;
-        return !!info;
-    } catch (error) {
-        console.error('❌ Session malsaine:', error.message);
-        return false;
-    }
-}
-
-// Vérification périodique de la santé de la session
-setInterval(async () => {
-    if (state.ready && !(await checkSessionHealth())) {
-        console.log('⚠️ Session détectée comme malsaine, reconnexion...');
-        await attemptReconnect();
-    }
-}, 600000); // Vérifier toutes les 10 minutes
-
-// Point d'entrée
 if (require.main === module) {
-    start().catch(async error => {
-        console.error('❌ ERREUR DÉMARRAGE:', error.message);
-        
-        // Tenter une sauvegarde même en cas d'erreur de démarrage
-        try {
-            if (state.drive) {
-                await Promise.all([
-                    saveData('users'),
-                    saveData('codes'), 
-                    saveData('groups')
-                ]);
-                console.log('💾 Sauvegarde de récupération effectuée');
-            }
-        } catch (e) {}
-        
+    start().catch(error => {
+        console.error('❌ ERREUR:', error.message);
         process.exit(1);
     });
 }
