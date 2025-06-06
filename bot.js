@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 
-// Configuration globale
+// Configuration globale 
 const CONFIG = {
     ADMIN_NUMBER: '237651104356@c.us',
     DATA_FILE: path.join(__dirname, 'bot_data.json'),
