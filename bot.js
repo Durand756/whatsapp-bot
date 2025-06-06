@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 const QRCode = require('qrcode');
 const express = require('express');
 
-// Configuration avec MongoDB Atlas gratuit
+// Configuration avec MongoDB Atlas gratuit 
 const CONFIG = {
     ADMIN_NUMBER: '237651104356@c.us',
     MONGODB_URI: process.env.MONGODB_URI || 'mongodb+srv://username:password@cluster.mongodb.net/whatsappbot?retryWrites=true&w=majority',
