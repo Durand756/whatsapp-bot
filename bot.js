@@ -5,7 +5,7 @@ const { google } = require('googleapis');
 const fs = require('fs').promises;
 const path = require('path');
 
-// Configuration centralisée
+// Configuration centralisée 
 const CONFIG = {
     ADMIN_NUMBER: '237651104356@c.us',
     PORT: process.env.PORT || 3000,
