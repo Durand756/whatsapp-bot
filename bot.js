@@ -1,8 +1,7 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const QRCode = require('qrcode');
 const express = require('express');
-const fs = require('fs').promises;
-const path = require('path');
+const { google } = require('googleapis');
 
 // Configuration centralisée
 const CONFIG = {
@@ -11,12 +10,14 @@ const CONFIG = {
     USAGE_DAYS: 30,
     CODE_EXPIRY_HOURS: 24,
     QR_TIMEOUT: 120000,
-    // Fichiers de données
-    DATA_DIR: './data',
-    FILES: {
-        USERS: './data/users.json',
-        CODES: './data/codes.json',
-        GROUPS: './data/groups.json'
+    // Configuration Google Drive
+    GDRIVE: {
+        PARENT_FOLDER_ID: process.env.GDRIVE_FOLDER_ID || null, // ID du dossier parent sur Google Drive
+        FILES: {
+            USERS: 'users.json',
+            CODES: 'codes.json',
+            GROUPS: 'groups.json'
+        }
     }
 };
 
@@ -31,89 +32,152 @@ const state = {
         users: new Map(),
         codes: new Map(),
         groups: new Map()
+    },
+    // Google Drive
+    drive: null,
+    driveFiles: {
+        users: null,
+        codes: null,
+        groups: null
     }
 };
 
-// Initialisation du système de fichiers
-async function initDB() {
+// Initialisation Google Drive
+async function initGoogleDrive() {
     try {
-        // Créer le dossier data
-        await fs.mkdir(CONFIG.DATA_DIR, { recursive: true });
-        
-        // Initialiser les fichiers JSON s'ils n'existent pas
-        for (const [key, file] of Object.entries(CONFIG.FILES)) {
-            try {
-                await fs.access(file);
-            } catch {
-                await fs.writeFile(file, '{}');
-                console.log(`📄 Créé: ${file}`);
-            }
-        }
-        
-        // Charger les données en cache
-        await loadCache();
-        
-        // Nettoyage automatique au démarrage
-        await cleanupExpiredData();
-        
-        console.log('✅ Système de fichiers JSON initialisé');
+        // Créer les credentials depuis les variables d'environnement
+        const credentials = {
+            type: process.env.GOOGLE_TYPE,
+            project_id: process.env.GOOGLE_PROJECT_ID,
+            private_key_id: process.env.GOOGLE_PRIVATE_KEY_ID,
+            private_key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+            client_email: process.env.GOOGLE_CLIENT_EMAIL,
+            client_id: process.env.GOOGLE_CLIENT_ID,
+            auth_uri: process.env.GOOGLE_AUTH_URI,
+            token_uri: process.env.GOOGLE_TOKEN_URI,
+            auth_provider_x509_cert_url: process.env.GOOGLE_AUTH_PROVIDER_X509_CERT_URL,
+            client_x509_cert_url: process.env.GOOGLE_CLIENT_X509_CERT_URL
+        };
+
+        // Authentification avec Google
+        const auth = new google.auth.GoogleAuth({
+            credentials,
+            scopes: ['https://www.googleapis.com/auth/drive.file']
+        });
+
+        state.drive = google.drive({ version: 'v3', auth });
+
+        // Vérifier les fichiers existants ou les créer
+        await initDriveFiles();
+
+        console.log('✅ Google Drive initialisé');
         return true;
     } catch (error) {
-        console.error('❌ Erreur fichiers:', error.message);
+        console.error('❌ Erreur Google Drive:', error.message);
         return false;
     }
 }
 
-// Charger toutes les données en cache
-async function loadCache() {
+// Initialiser les fichiers sur Google Drive
+async function initDriveFiles() {
     try {
-        const [usersData, codesData, groupsData] = await Promise.all([
-            fs.readFile(CONFIG.FILES.USERS, 'utf8'),
-            fs.readFile(CONFIG.FILES.CODES, 'utf8'),
-            fs.readFile(CONFIG.FILES.GROUPS, 'utf8')
-        ]);
-        
-        const users = JSON.parse(usersData || '{}');
-        const codes = JSON.parse(codesData || '{}');
-        const groups = JSON.parse(groupsData || '{}');
-        
-        // Convertir en Map pour performance
-        state.cache.users = new Map(Object.entries(users));
-        state.cache.codes = new Map(Object.entries(codes));
-        state.cache.groups = new Map(Object.entries(groups));
-        
-        console.log(`📊 Cache chargé: ${state.cache.users.size} users, ${state.cache.codes.size} codes, ${state.cache.groups.size} groups`);
+        for (const [key, fileName] of Object.entries(CONFIG.GDRIVE.FILES)) {
+            // Chercher le fichier existant
+            const response = await state.drive.files.list({
+                q: `name='${fileName}'${CONFIG.GDRIVE.PARENT_FOLDER_ID ? ` and parents in '${CONFIG.GDRIVE.PARENT_FOLDER_ID}'` : ''}`,
+                fields: 'files(id, name)'
+            });
+
+            if (response.data.files.length > 0) {
+                // Fichier trouvé
+                state.driveFiles[key] = response.data.files[0].id;
+                console.log(`📄 Trouvé: ${fileName} (${state.driveFiles[key]})`);
+            } else {
+                // Créer le fichier
+                const fileMetadata = {
+                    name: fileName,
+                    parents: CONFIG.GDRIVE.PARENT_FOLDER_ID ? [CONFIG.GDRIVE.PARENT_FOLDER_ID] : undefined
+                };
+
+                const media = {
+                    mimeType: 'application/json',
+                    body: '{}'
+                };
+
+                const file = await state.drive.files.create({
+                    resource: fileMetadata,
+                    media: media,
+                    fields: 'id'
+                });
+
+                state.driveFiles[key] = file.data.id;
+                console.log(`📄 Créé: ${fileName} (${state.driveFiles[key]})`);
+            }
+        }
+
+        // Charger les données en cache
+        await loadCache();
+
+        // Nettoyage automatique au démarrage
+        await cleanupExpiredData();
+
+        return true;
     } catch (error) {
-        console.error('❌ Erreur chargement cache:', error.message);
+        console.error('❌ Erreur init fichiers Drive:', error.message);
+        return false;
     }
 }
 
-// Sauvegarder les données sur disque
+// Charger toutes les données depuis Google Drive
+async function loadCache() {
+    try {
+        const promises = [];
+        
+        for (const [key, fileId] of Object.entries(state.driveFiles)) {
+            promises.push(
+                state.drive.files.get({
+                    fileId: fileId,
+                    alt: 'media'
+                }).then(response => ({ key, data: response.data }))
+            );
+        }
+
+        const results = await Promise.all(promises);
+        
+        for (const { key, data } of results) {
+            const parsedData = typeof data === 'string' ? JSON.parse(data || '{}') : (data || {});
+            state.cache[key] = new Map(Object.entries(parsedData));
+        }
+
+        console.log(`📊 Cache chargé depuis Drive: ${state.cache.users.size} users, ${state.cache.codes.size} codes, ${state.cache.groups.size} groups`);
+    } catch (error) {
+        console.error('❌ Erreur chargement cache Drive:', error.message);
+    }
+}
+
+// Sauvegarder les données sur Google Drive
 async function saveData(type) {
     try {
-        let data, file;
-        
-        switch (type) {
-            case 'users':
-                data = Object.fromEntries(state.cache.users);
-                file = CONFIG.FILES.USERS;
-                break;
-            case 'codes':
-                data = Object.fromEntries(state.cache.codes);
-                file = CONFIG.FILES.CODES;
-                break;
-            case 'groups':
-                data = Object.fromEntries(state.cache.groups);
-                file = CONFIG.FILES.GROUPS;
-                break;
-            default:
-                return false;
+        if (!state.driveFiles[type]) {
+            console.error(`❌ ID fichier ${type} manquant`);
+            return false;
         }
-        
-        await fs.writeFile(file, JSON.stringify(data, null, 2));
+
+        const data = Object.fromEntries(state.cache[type]);
+        const jsonData = JSON.stringify(data, null, 2);
+
+        await state.drive.files.update({
+            fileId: state.driveFiles[type],
+            media: {
+                mimeType: 'application/json',
+                body: jsonData
+            }
+        });
+
+        console.log(`💾 ${type} sauvegardé sur Drive`);
         return true;
     } catch (error) {
-        console.error(`❌ Erreur sauvegarde ${type}:`, error.message);
+        console.error(`❌ Erreur sauvegarde ${type} sur Drive:`, error.message);
         return false;
     }
 }
@@ -167,7 +231,7 @@ function generateCode() {
     return code;
 }
 
-// Fonctions base de données JSON
+// Fonctions base de données Google Drive
 const db = {
     async createCode(phone) {
         const code = generateCode();
@@ -331,7 +395,7 @@ app.use(express.json({ limit: '1mb' }));
 
 app.get('/', (req, res) => {
     const html = state.ready ? 
-        `<h1 style="color:green">✅ Bot En Ligne</h1><p>🕒 ${new Date().toLocaleString()}</p><p>📄 JSON Files</p>` :
+        `<h1 style="color:green">✅ Bot En Ligne</h1><p>🕒 ${new Date().toLocaleString()}</p><p>☁️ Google Drive</p>` :
         state.qr ? 
         `<h1>📱 Scanner QR Code</h1><img src="data:image/png;base64,${state.qr}"><script>setTimeout(()=>location.reload(),30000)</script>` :
         `<h1>🔄 Initialisation...</h1><script>setTimeout(()=>location.reload(),10000)</script>`;
@@ -342,14 +406,15 @@ app.get('/', (req, res) => {
 app.get('/health', (req, res) => {
     res.json({ 
         status: state.ready ? 'online' : 'offline',
-        database: 'json-files',
+        database: 'google-drive',
         uptime: Math.floor(process.uptime()),
         timestamp: new Date().toISOString(),
         cache_size: {
             users: state.cache.users.size,
             codes: state.cache.codes.size,
             groups: state.cache.groups.size
-        }
+        },
+        drive_files: state.driveFiles
     });
 });
 
@@ -390,7 +455,7 @@ async function initClient() {
         setTimeout(async () => {
             try {
                 await state.client.sendMessage(CONFIG.ADMIN_NUMBER, 
-                    `🎉 *BOT EN LIGNE*\n✅ JSON Files connecté\n🕒 ${new Date().toLocaleString()}`);
+                    `🎉 *BOT EN LIGNE*\n☁️ Google Drive connecté\n🕒 ${new Date().toLocaleString()}`);
             } catch (e) {}
         }, 3000);
     });
@@ -426,7 +491,7 @@ async function initClient() {
                     
                 } else if (cmd === '/stats') {
                     const stats = await db.getStats();
-                    await msg.reply(`📊 *STATS JSON*\n👥 Total: ${stats.total_users}\n✅ Actifs: ${stats.active_users}\n🔑 Codes: ${stats.total_codes}/${stats.used_codes}\n📢 Groupes: ${stats.total_groups}`);
+                    await msg.reply(`📊 *STATS DRIVE*\n👥 Total: ${stats.total_users}\n✅ Actifs: ${stats.active_users}\n🔑 Codes: ${stats.total_codes}/${stats.used_codes}\n📢 Groupes: ${stats.total_groups}`);
                     
                 } else if (cmd === '/backup') {
                     // Sauvegarder tout
@@ -435,10 +500,10 @@ async function initClient() {
                         saveData('codes'),
                         saveData('groups')
                     ]);
-                    await msg.reply('✅ Backup effectué!');
+                    await msg.reply('✅ Backup Drive effectué!');
                     
                 } else if (cmd === '/help') {
-                    await msg.reply('🤖 *ADMIN*\n• /gencode [num] - Créer code\n• /stats - Statistiques\n• /backup - Sauvegarder\n• /help - Aide');
+                    await msg.reply('🤖 *ADMIN*\n• /gencode [num] - Créer code\n• /stats - Statistiques\n• /backup - Sauvegarder\n• /help - Aide\n\n☁️ Google Drive');
                 }
                 return;
             }
@@ -466,7 +531,7 @@ async function initClient() {
                 const userData = state.cache.users.get(phone);
                 const remaining = Math.ceil(CONFIG.USAGE_DAYS - (Date.now() - new Date(userData.activatedAt).getTime()) / 86400000);
                 const groups = await db.getUserGroups(phone);
-                await msg.reply(`📊 *STATUT*\n🟢 Actif\n📅 ${remaining} jours restants\n📢 ${groups.length} groupes\n📄 JSON Files`);
+                await msg.reply(`📊 *STATUT*\n🟢 Actif\n📅 ${remaining} jours restants\n📢 ${groups.length} groupes\n☁️ Google Drive`);
                 
             } else if (cmd === '/addgroup') {
                 const chat = await msg.getChat();
@@ -502,7 +567,7 @@ async function initClient() {
                 
             } else if (cmd === '/help') {
                 const groups = await db.getUserGroups(phone);
-                await msg.reply(`🤖 *COMMANDES*\n• /broadcast [msg] - Diffuser\n• /addgroup - Ajouter groupe\n• /status - Mon statut\n• /help - Aide\n\n📊 ${groups.length} groupe(s)\n📄 JSON Files`);
+                await msg.reply(`🤖 *COMMANDES*\n• /broadcast [msg] - Diffuser\n• /addgroup - Ajouter groupe\n• /status - Mon statut\n• /help - Aide\n\n📊 ${groups.length} groupe(s)\n☁️ Google Drive`);
             }
             
         } catch (error) {
@@ -526,7 +591,7 @@ setInterval(async () => {
             saveData('groups')
         ]);
         
-        console.log('💾 Sauvegarde périodique effectuée');
+        console.log('💾 Sauvegarde périodique Google Drive effectuée');
     } catch (e) {
         console.error('❌ Erreur sauvegarde périodique:', e.message);
     }
@@ -534,17 +599,17 @@ setInterval(async () => {
 
 // Keep-alive pour Render
 setInterval(() => {
-    console.log(`💗 Uptime: ${Math.floor(process.uptime())}s - ${state.ready ? 'ONLINE' : 'OFFLINE'} - 📄 JSON (${state.cache.users.size}/${state.cache.codes.size}/${state.cache.groups.size})`);
+    console.log(`💗 Uptime: ${Math.floor(process.uptime())}s - ${state.ready ? 'ONLINE' : 'OFFLINE'} - ☁️ Drive (${state.cache.users.size}/${state.cache.codes.size}/${state.cache.groups.size})`);
 }, 300000);
 
 // Démarrage
 async function start() {
     console.log('🚀 DÉMARRAGE BOT WHATSAPP');
-    console.log('💾 Base: Fichiers JSON (100% GRATUIT)');
+    console.log('☁️ Base: Google Drive (100% GRATUIT)');
     console.log('🌐 Hébergeur: Render');
     
-    if (!(await initDB())) {
-        console.error('❌ Échec initialisation fichiers');
+    if (!(await initGoogleDrive())) {
+        console.error('❌ Échec initialisation Google Drive');
         process.exit(1);
     }
     
@@ -566,14 +631,14 @@ async function shutdown() {
             saveData('codes'),
             saveData('groups')
         ]);
-        console.log('💾 Données sauvegardées');
+        console.log('💾 Données sauvegardées sur Google Drive');
     } catch (e) {
         console.error('❌ Erreur sauvegarde finale:', e.message);
     }
     
     if (state.client) {
         try {
-            await state.client.sendMessage(CONFIG.ADMIN_NUMBER, '🛑 Bot arrêté - données sauvegardées');
+            await state.client.sendMessage(CONFIG.ADMIN_NUMBER, '🛑 Bot arrêté - données sauvegardées sur Drive');
         } catch (e) {}
         await state.client.destroy();
     }
