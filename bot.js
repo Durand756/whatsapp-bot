@@ -1,7 +1,9 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, LocalAuth, RemoteAuth } = require('whatsapp-web.js');
 const QRCode = require('qrcode');
 const express = require('express');
 const { google } = require('googleapis');
+const fs = require('fs').promises;
+const path = require('path');
 
 // Configuration centralisée
 const CONFIG = {
@@ -10,13 +12,15 @@ const CONFIG = {
     USAGE_DAYS: 30,
     CODE_EXPIRY_HOURS: 24,
     QR_TIMEOUT: 120000,
+    SESSION_CHECK_INTERVAL: 300000, // 5 minutes
     // Configuration Google Drive
     GDRIVE: {
-        PARENT_FOLDER_ID: process.env.GDRIVE_FOLDER_ID || null, // ID du dossier parent sur Google Drive
+        PARENT_FOLDER_ID: process.env.GDRIVE_FOLDER_ID || null,
         FILES: {
             USERS: 'users.json',
             CODES: 'codes.json',
-            GROUPS: 'groups.json'
+            GROUPS: 'groups.json',
+            SESSION: 'whatsapp_session.json' // Nouveau fichier pour la session
         }
     }
 };
@@ -27,6 +31,9 @@ const state = {
     qr: null,
     client: null,
     server: null,
+    lastActivity: Date.now(),
+    reconnectAttempts: 0,
+    maxReconnectAttempts: 5,
     // Cache en mémoire pour performance
     cache: {
         users: new Map(),
@@ -38,9 +45,71 @@ const state = {
     driveFiles: {
         users: null,
         codes: null,
-        groups: null
-    }
+        groups: null,
+        session: null
+    },
+    // Session management
+    sessionData: null,
+    isRestoring: false
 };
+
+// Classe pour gérer la session sur Google Drive
+class DriveSessionStore {
+    constructor(drive, fileId) {
+        this.drive = drive;
+        this.fileId = fileId;
+    }
+
+    async save(sessionData) {
+        try {
+            const data = JSON.stringify(sessionData, null, 2);
+            
+            await this.drive.files.update({
+                fileId: this.fileId,
+                media: {
+                    mimeType: 'application/json',
+                    body: data
+                }
+            });
+            
+            console.log('💾 Session sauvegardée sur Drive');
+            return true;
+        } catch (error) {
+            console.error('❌ Erreur sauvegarde session:', error.message);
+            return false;
+        }
+    }
+
+    async extract() {
+        try {
+            const response = await this.drive.files.get({
+                fileId: this.fileId,
+                alt: 'media'
+            });
+
+            const data = typeof response.data === 'string' ? 
+                JSON.parse(response.data || '{}') : 
+                (response.data || {});
+
+            console.log('📥 Session récupérée depuis Drive');
+            return data;
+        } catch (error) {
+            console.error('❌ Erreur récupération session:', error.message);
+            return {};
+        }
+    }
+
+    async delete() {
+        try {
+            await this.save({});
+            console.log('🗑️ Session supprimée du Drive');
+            return true;
+        } catch (error) {
+            console.error('❌ Erreur suppression session:', error.message);
+            return false;
+        }
+    }
+}
 
 // Initialisation Google Drive
 async function initGoogleDrive() {
@@ -101,7 +170,7 @@ async function initDriveFiles() {
 
                 const media = {
                     mimeType: 'application/json',
-                    body: '{}'
+                    body: key === 'session' ? '{}' : '{}'
                 };
 
                 const file = await state.drive.files.create({
@@ -128,18 +197,78 @@ async function initDriveFiles() {
     }
 }
 
+// Custom LocalAuth qui utilise Google Drive
+class DriveAuth {
+    constructor(options = {}) {
+        this.clientId = options.clientId || 'default';
+        this.sessionStore = null;
+    }
+
+    async logout() {
+        if (this.sessionStore) {
+            await this.sessionStore.delete();
+        }
+        state.sessionData = null;
+        console.log('🔌 Session déconnectée');
+    }
+
+    async getAuthEventPayload() {
+        return state.sessionData;
+    }
+
+    async setAuthEventPayload(sessionData) {
+        state.sessionData = sessionData;
+        
+        if (this.sessionStore && sessionData) {
+            await this.sessionStore.save({
+                sessionData,
+                timestamp: new Date().toISOString(),
+                clientId: this.clientId
+            });
+        }
+    }
+
+    async beforeConnect() {
+        // Initialiser le store de session
+        if (!this.sessionStore && state.driveFiles.session) {
+            this.sessionStore = new DriveSessionStore(state.drive, state.driveFiles.session);
+        }
+
+        // Tenter de récupérer une session existante
+        if (this.sessionStore && !state.sessionData) {
+            try {
+                const savedSession = await this.sessionStore.extract();
+                
+                if (savedSession.sessionData && savedSession.clientId === this.clientId) {
+                    state.sessionData = savedSession.sessionData;
+                    state.isRestoring = true;
+                    console.log('🔄 Restauration session depuis Drive...');
+                    return;
+                }
+            } catch (error) {
+                console.error('❌ Erreur récupération session:', error.message);
+            }
+        }
+
+        console.log('🆕 Nouvelle session requise');
+    }
+}
+
 // Charger toutes les données depuis Google Drive
 async function loadCache() {
     try {
         const promises = [];
         
+        // Charger seulement les fichiers de données (pas la session)
         for (const [key, fileId] of Object.entries(state.driveFiles)) {
-            promises.push(
-                state.drive.files.get({
-                    fileId: fileId,
-                    alt: 'media'
-                }).then(response => ({ key, data: response.data }))
-            );
+            if (key !== 'session') {
+                promises.push(
+                    state.drive.files.get({
+                        fileId: fileId,
+                        alt: 'media'
+                    }).then(response => ({ key, data: response.data }))
+                );
+            }
         }
 
         const results = await Promise.all(promises);
@@ -158,8 +287,8 @@ async function loadCache() {
 // Sauvegarder les données sur Google Drive
 async function saveData(type) {
     try {
-        if (!state.driveFiles[type]) {
-            console.error(`❌ ID fichier ${type} manquant`);
+        if (!state.driveFiles[type] || type === 'session') {
+            console.error(`❌ ID fichier ${type} manquant ou non autorisé`);
             return false;
         }
 
@@ -394,11 +523,14 @@ const app = express();
 app.use(express.json({ limit: '1mb' }));
 
 app.get('/', (req, res) => {
+    const sessionStatus = state.sessionData ? '🔑 Session Active' : '❌ Pas de Session';
+    const reconnectInfo = state.reconnectAttempts > 0 ? `🔄 Tentatives: ${state.reconnectAttempts}/${state.maxReconnectAttempts}` : '';
+    
     const html = state.ready ? 
-        `<h1 style="color:green">✅ Bot En Ligne</h1><p>🕒 ${new Date().toLocaleString()}</p><p>☁️ Google Drive</p>` :
+        `<h1 style="color:green">✅ Bot En Ligne</h1><p>🕒 ${new Date().toLocaleString()}</p><p>☁️ Google Drive + Session Persistante</p><p>${sessionStatus}</p>` :
         state.qr ? 
-        `<h1>📱 Scanner QR Code</h1><img src="data:image/png;base64,${state.qr}"><script>setTimeout(()=>location.reload(),30000)</script>` :
-        `<h1>🔄 Initialisation...</h1><script>setTimeout(()=>location.reload(),10000)</script>`;
+        `<h1>📱 Scanner QR Code</h1><p>${sessionStatus}</p><img src="data:image/png;base64,${state.qr}"><script>setTimeout(()=>location.reload(),30000)</script>` :
+        `<h1>🔄 Initialisation...</h1><p>${sessionStatus}</p><p>${reconnectInfo}</p><script>setTimeout(()=>location.reload(),10000)</script>`;
     
     res.send(`<!DOCTYPE html><html><head><title>WhatsApp Bot</title><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font-family:Arial;text-align:center;background:#25D366;color:white;padding:50px}img{background:white;padding:20px;border-radius:10px}</style></head><body>${html}</body></html>`);
 });
@@ -407,8 +539,10 @@ app.get('/health', (req, res) => {
     res.json({ 
         status: state.ready ? 'online' : 'offline',
         database: 'google-drive',
+        session: state.sessionData ? 'active' : 'inactive',
         uptime: Math.floor(process.uptime()),
         timestamp: new Date().toISOString(),
+        reconnect_attempts: state.reconnectAttempts,
         cache_size: {
             users: state.cache.users.size,
             codes: state.cache.codes.size,
@@ -418,10 +552,36 @@ app.get('/health', (req, res) => {
     });
 });
 
-// Initialisation client WhatsApp
+// Fonction de reconnexion intelligente
+async function attemptReconnect() {
+    if (state.reconnectAttempts >= state.maxReconnectAttempts) {
+        console.log('❌ Limite de reconnexion atteinte');
+        return false;
+    }
+
+    state.reconnectAttempts++;
+    console.log(`🔄 Tentative de reconnexion ${state.reconnectAttempts}/${state.maxReconnectAttempts}`);
+
+    try {
+        if (state.client) {
+            await state.client.destroy();
+        }
+        
+        // Attendre avant de recréer le client
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        
+        await initClient();
+        return true;
+    } catch (error) {
+        console.error('❌ Erreur reconnexion:', error.message);
+        return false;
+    }
+}
+
+// Initialisation client WhatsApp avec session persistante
 async function initClient() {
     state.client = new Client({
-        authStrategy: new LocalAuth({ clientId: 'whatsapp-bot' }),
+        authStrategy: new DriveAuth({ clientId: 'whatsapp-bot-drive' }),
         puppeteer: {
             headless: true,
             args: [
@@ -443,31 +603,56 @@ async function initClient() {
     });
 
     state.client.on('authenticated', () => {
-        console.log('🔐 Authentifié');
+        console.log('🔐 Authentifié' + (state.isRestoring ? ' (session restaurée)' : ''));
         state.qr = null;
+        state.reconnectAttempts = 0; // Reset compteur
+        state.isRestoring = false;
+    });
+
+    state.client.on('auth_failure', async (msg) => {
+        console.log('❌ Échec authentification:', msg);
+        
+        // Supprimer la session corrompue
+        if (state.client.authStrategy && state.client.authStrategy.sessionStore) {
+            await state.client.authStrategy.sessionStore.delete();
+        }
+        
+        state.sessionData = null;
+        state.ready = false;
+        
+        // Tenter une reconnexion
+        setTimeout(() => attemptReconnect(), 10000);
     });
 
     state.client.on('ready', async () => {
         state.ready = true;
         state.qr = null;
-        console.log('🎉 BOT PRÊT!');
+        state.lastActivity = Date.now();
+        console.log('🎉 BOT PRÊT! Session persistante active');
         
         setTimeout(async () => {
             try {
                 await state.client.sendMessage(CONFIG.ADMIN_NUMBER, 
-                    `🎉 *BOT EN LIGNE*\n☁️ Google Drive connecté\n🕒 ${new Date().toLocaleString()}`);
+                    `🎉 *BOT EN LIGNE*\n☁️ Google Drive + Session Persistante\n🕒 ${new Date().toLocaleString()}\n🔄 Reconnexions: ${state.reconnectAttempts}`);
             } catch (e) {}
         }, 3000);
     });
 
-    state.client.on('disconnected', () => {
-        console.log('🔌 Déconnecté');
+    state.client.on('disconnected', async (reason) => {
+        console.log('🔌 Déconnecté:', reason);
         state.ready = false;
+        
+        // Tenter une reconnexion automatique
+        if (reason !== 'LOGOUT') {
+            setTimeout(() => attemptReconnect(), 15000);
+        }
     });
 
     // Traitement des messages
     state.client.on('message', async (msg) => {
         if (!state.ready || !msg.body || msg.type !== 'chat' || !msg.body.startsWith('/')) return;
+        
+        state.lastActivity = Date.now(); // Marquer l'activité
         
         try {
             const contact = await msg.getContact();
@@ -491,7 +676,8 @@ async function initClient() {
                     
                 } else if (cmd === '/stats') {
                     const stats = await db.getStats();
-                    await msg.reply(`📊 *STATS DRIVE*\n👥 Total: ${stats.total_users}\n✅ Actifs: ${stats.active_users}\n🔑 Codes: ${stats.total_codes}/${stats.used_codes}\n📢 Groupes: ${stats.total_groups}`);
+                    const uptime = Math.floor(process.uptime() / 60);
+                    await msg.reply(`📊 *STATS DRIVE*\n👥 Total: ${stats.total_users}\n✅ Actifs: ${stats.active_users}\n🔑 Codes: ${stats.total_codes}/${stats.used_codes}\n📢 Groupes: ${stats.total_groups}\n⏱️ Uptime: ${uptime}min\n🔄 Reconnexions: ${state.reconnectAttempts}`);
                     
                 } else if (cmd === '/backup') {
                     // Sauvegarder tout
@@ -502,8 +688,15 @@ async function initClient() {
                     ]);
                     await msg.reply('✅ Backup Drive effectué!');
                     
+                } else if (cmd === '/reset-session') {
+                    // Réinitialiser la session
+                    if (state.client.authStrategy && state.client.authStrategy.sessionStore) {
+                        await state.client.authStrategy.sessionStore.delete();
+                    }
+                    await msg.reply('🔄 Session réinitialisée. Redémarrage requis.');
+                    
                 } else if (cmd === '/help') {
-                    await msg.reply('🤖 *ADMIN*\n• /gencode [num] - Créer code\n• /stats - Statistiques\n• /backup - Sauvegarder\n• /help - Aide\n\n☁️ Google Drive');
+                    await msg.reply('🤖 *ADMIN*\n• /gencode [num] - Créer code\n• /stats - Statistiques\n• /backup - Sauvegarder\n• /reset-session - Reset session\n• /help - Aide\n\n☁️ Google Drive + Session Persistante');
                 }
                 return;
             }
@@ -531,7 +724,7 @@ async function initClient() {
                 const userData = state.cache.users.get(phone);
                 const remaining = Math.ceil(CONFIG.USAGE_DAYS - (Date.now() - new Date(userData.activatedAt).getTime()) / 86400000);
                 const groups = await db.getUserGroups(phone);
-                await msg.reply(`📊 *STATUT*\n🟢 Actif\n📅 ${remaining} jours restants\n📢 ${groups.length} groupes\n☁️ Google Drive`);
+                await msg.reply(`📊 *STATUT*\n🟢 Actif\n📅 ${remaining} jours restants\n📢 ${groups.length} groupes\n☁️ Google Drive + Session Persistante`);
                 
             } else if (cmd === '/addgroup') {
                 const chat = await msg.getChat();
@@ -567,7 +760,7 @@ async function initClient() {
                 
             } else if (cmd === '/help') {
                 const groups = await db.getUserGroups(phone);
-                await msg.reply(`🤖 *COMMANDES*\n• /broadcast [msg] - Diffuser\n• /addgroup - Ajouter groupe\n• /status - Mon statut\n• /help - Aide\n\n📊 ${groups.length} groupe(s)\n☁️ Google Drive`);
+                await msg.reply(`🤖 *COMMANDES*\n• /broadcast [msg] - Diffuser\n• /addgroup - Ajouter groupe\n• /status - Mon statut\n• /help - Aide\n\n📊 ${groups.length} groupe(s)\n☁️ Google Drive + Session Persistante`);
             }
             
         } catch (error) {
@@ -578,6 +771,25 @@ async function initClient() {
 
     await state.client.initialize();
 }
+
+// Surveillance de la connexion
+setInterval(() => {
+    if (state.ready) {
+        const inactiveTime = Date.now() - state.lastActivity;
+        
+        // Si inactif depuis plus de 30 minutes, envoyer un ping
+        if (inactiveTime > 1800000) {
+            console.log('🔔 Ping de maintien de connexion');
+            state.lastActivity = Date.now();
+            
+            // Envoyer un message silencieux à l'admin pour maintenir la connexion
+            try {
+                state.client.sendMessage(CONFIG.ADMIN_NUMBER, '🔔 Ping automatique - Bot actif')
+                    .catch(() => {}); // Ignorer les erreurs de ping
+            } catch (e) {}
+        }
+    }
+}, CONFIG.SESSION_CHECK_INTERVAL);
 
 // Nettoyage et sauvegarde périodiques
 setInterval(async () => {
@@ -597,15 +809,17 @@ setInterval(async () => {
     }
 }, 3600000); // 1h
 
-// Keep-alive pour Render
+// Keep-alive pour Render avec informations de session
 setInterval(() => {
-    console.log(`💗 Uptime: ${Math.floor(process.uptime())}s - ${state.ready ? 'ONLINE' : 'OFFLINE'} - ☁️ Drive (${state.cache.users.size}/${state.cache.codes.size}/${state.cache.groups.size})`);
+    const sessionStatus = state.sessionData ? 'SESSION-OK' : 'NO-SESSION';
+    console.log(`💗 Uptime: ${Math.floor(process.uptime())}s - ${state.ready ? 'ONLINE' : 'OFFLINE'} - ${sessionStatus} - ☁️ Drive (${state.cache.users.size}/${state.cache.codes.size}/${state.cache.groups.size}) - Reconnect: ${state.reconnectAttempts}`);
 }, 300000);
 
 // Démarrage
 async function start() {
     console.log('🚀 DÉMARRAGE BOT WHATSAPP');
     console.log('☁️ Base: Google Drive (100% GRATUIT)');
+    console.log('🔑 Session: Persistante sur Drive');
     console.log('🌐 Hébergeur: Render');
     
     if (!(await initGoogleDrive())) {
@@ -620,7 +834,7 @@ async function start() {
     await initClient();
 }
 
-// Arrêt propre avec sauvegarde
+// Arrêt propre avec sauvegarde de session
 async function shutdown() {
     console.log('🛑 Arrêt en cours...');
     
@@ -636,35 +850,102 @@ async function shutdown() {
         console.error('❌ Erreur sauvegarde finale:', e.message);
     }
     
-    if (state.client) {
+    // Notification d'arrêt avec préservation de session
+    if (state.client && state.ready) {
         try {
-            await state.client.sendMessage(CONFIG.ADMIN_NUMBER, '🛑 Bot arrêté - données sauvegardées sur Drive');
+            await state.client.sendMessage(CONFIG.ADMIN_NUMBER, 
+                `🛑 Bot arrêté - Session préservée sur Drive\n🔑 Reconnexion automatique au redémarrage\n💾 Données sauvegardées`);
         } catch (e) {}
+        
+        // Attendre que le message soit envoyé
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
         await state.client.destroy();
     }
     
     if (state.server) state.server.close();
     
-    console.log('✅ Arrêt terminé');
+    console.log('✅ Arrêt terminé - Session préservée');
     process.exit(0);
 }
 
+// Gestion des signaux avec sauvegarde de session
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 
-// Gestion erreurs
-process.on('uncaughtException', (error) => {
-    console.error('❌ Exception:', error.message);
+// Gestion erreurs améliorée
+process.on('uncaughtException', async (error) => {
+    console.error('❌ Exception critique:', error.message);
+    
+    // Tenter une sauvegarde d'urgence
+    try {
+        if (state.drive && state.driveFiles.users) {
+            await Promise.all([
+                saveData('users'),
+                saveData('codes'),
+                saveData('groups')
+            ]);
+            console.log('💾 Sauvegarde d\'urgence effectuée');
+        }
+    } catch (e) {
+        console.error('❌ Échec sauvegarde d\'urgence:', e.message);
+    }
+    
+    // Redémarrer après sauvegarde
+    process.exit(1);
 });
 
-process.on('unhandledRejection', (reason) => {
+process.on('unhandledRejection', async (reason) => {
     console.error('❌ Promise rejetée:', reason);
+    
+    // Si c'est une erreur de connexion, tenter une reconnexion
+    if (reason && reason.message && reason.message.includes('connection')) {
+        console.log('🔄 Erreur de connexion détectée, reconnexion...');
+        setTimeout(() => attemptReconnect(), 5000);
+    }
 });
+
+// Fonction utilitaire pour vérifier l'état de la session
+async function checkSessionHealth() {
+    try {
+        if (!state.client || !state.ready) {
+            return false;
+        }
+        
+        // Tester la connexion en récupérant les infos du client
+        const info = await state.client.info;
+        return !!info;
+    } catch (error) {
+        console.error('❌ Session malsaine:', error.message);
+        return false;
+    }
+}
+
+// Vérification périodique de la santé de la session
+setInterval(async () => {
+    if (state.ready && !(await checkSessionHealth())) {
+        console.log('⚠️ Session détectée comme malsaine, reconnexion...');
+        await attemptReconnect();
+    }
+}, 600000); // Vérifier toutes les 10 minutes
 
 // Point d'entrée
 if (require.main === module) {
-    start().catch(error => {
+    start().catch(async error => {
         console.error('❌ ERREUR DÉMARRAGE:', error.message);
+        
+        // Tenter une sauvegarde même en cas d'erreur de démarrage
+        try {
+            if (state.drive) {
+                await Promise.all([
+                    saveData('users'),
+                    saveData('codes'), 
+                    saveData('groups')
+                ]);
+                console.log('💾 Sauvegarde de récupération effectuée');
+            }
+        } catch (e) {}
+        
         process.exit(1);
     });
 }
