@@ -1,5 +1,4 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
-const mysql = require('mysql2/promise');
 const QRCode = require('qrcode');
 const express = require('express');
 const fs = require('fs').promises;
@@ -8,14 +7,17 @@ const path = require('path');
 // Configuration centralisée
 const CONFIG = {
     ADMIN_NUMBER: '237651104356@c.us',
-    DB_HOST: process.env.DB_HOST || 'localhost',
-    DB_USER: process.env.DB_USER || 'root',
-    DB_PASS: process.env.DB_PASS || '',
-    DB_NAME: process.env.DB_NAME || 'whatsapp_bot',
     PORT: process.env.PORT || 3000,
     USAGE_DAYS: 30,
     CODE_EXPIRY_HOURS: 24,
-    QR_TIMEOUT: 120000
+    QR_TIMEOUT: 120000,
+    // Fichiers de données
+    DATA_DIR: './data',
+    FILES: {
+        USERS: './data/users.json',
+        CODES: './data/codes.json',
+        GROUPS: './data/groups.json'
+    }
 };
 
 // État global simplifié
@@ -23,68 +25,134 @@ const state = {
     ready: false,
     qr: null,
     client: null,
-    db: null,
-    server: null
+    server: null,
+    // Cache en mémoire pour performance
+    cache: {
+        users: new Map(),
+        codes: new Map(),
+        groups: new Map()
+    }
 };
 
-// Pool de connexions MySQL
+// Initialisation du système de fichiers
 async function initDB() {
     try {
-        state.db = mysql.createPool({
-            host: CONFIG.DB_HOST,
-            user: CONFIG.DB_USER,
-            password: CONFIG.DB_PASS,
-            database: CONFIG.DB_NAME,
-            waitForConnections: true,
-            connectionLimit: 10,
-            queueLimit: 0,
-            connectTimeout: 40000,
-            timeout: 60000
-        });
-
-        // Créer les tables
-        await state.db.execute(`
-            CREATE TABLE IF NOT EXISTS users (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                phone VARCHAR(50) UNIQUE NOT NULL,
-                active BOOLEAN DEFAULT FALSE,
-                activated_at TIMESTAMP NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                INDEX idx_phone_active (phone, active)
-            )
-        `);
-
-        await state.db.execute(`
-            CREATE TABLE IF NOT EXISTS codes (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                phone VARCHAR(50) UNIQUE NOT NULL,
-                code VARCHAR(10) NOT NULL,
-                used BOOLEAN DEFAULT FALSE,
-                expires_at TIMESTAMP NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                INDEX idx_phone_expires (phone, expires_at)
-            )
-        `);
-
-        await state.db.execute(`
-            CREATE TABLE IF NOT EXISTS groups_list (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                group_id VARCHAR(100) UNIQUE NOT NULL,
-                name VARCHAR(255),
-                added_by VARCHAR(50) NOT NULL,
-                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                INDEX idx_added_by (added_by)
-            )
-        `);
-
-        // Nettoyage automatique des codes expirés
-        await state.db.execute('DELETE FROM codes WHERE expires_at < NOW()');
+        // Créer le dossier data
+        await fs.mkdir(CONFIG.DATA_DIR, { recursive: true });
         
-        console.log('✅ MySQL connecté et tables créées');
+        // Initialiser les fichiers JSON s'ils n'existent pas
+        for (const [key, file] of Object.entries(CONFIG.FILES)) {
+            try {
+                await fs.access(file);
+            } catch {
+                await fs.writeFile(file, '{}');
+                console.log(`📄 Créé: ${file}`);
+            }
+        }
+        
+        // Charger les données en cache
+        await loadCache();
+        
+        // Nettoyage automatique au démarrage
+        await cleanupExpiredData();
+        
+        console.log('✅ Système de fichiers JSON initialisé');
         return true;
     } catch (error) {
-        console.error('❌ Erreur MySQL:', error.message);
+        console.error('❌ Erreur fichiers:', error.message);
         return false;
+    }
+}
+
+// Charger toutes les données en cache
+async function loadCache() {
+    try {
+        const [usersData, codesData, groupsData] = await Promise.all([
+            fs.readFile(CONFIG.FILES.USERS, 'utf8'),
+            fs.readFile(CONFIG.FILES.CODES, 'utf8'),
+            fs.readFile(CONFIG.FILES.GROUPS, 'utf8')
+        ]);
+        
+        const users = JSON.parse(usersData || '{}');
+        const codes = JSON.parse(codesData || '{}');
+        const groups = JSON.parse(groupsData || '{}');
+        
+        // Convertir en Map pour performance
+        state.cache.users = new Map(Object.entries(users));
+        state.cache.codes = new Map(Object.entries(codes));
+        state.cache.groups = new Map(Object.entries(groups));
+        
+        console.log(`📊 Cache chargé: ${state.cache.users.size} users, ${state.cache.codes.size} codes, ${state.cache.groups.size} groups`);
+    } catch (error) {
+        console.error('❌ Erreur chargement cache:', error.message);
+    }
+}
+
+// Sauvegarder les données sur disque
+async function saveData(type) {
+    try {
+        let data, file;
+        
+        switch (type) {
+            case 'users':
+                data = Object.fromEntries(state.cache.users);
+                file = CONFIG.FILES.USERS;
+                break;
+            case 'codes':
+                data = Object.fromEntries(state.cache.codes);
+                file = CONFIG.FILES.CODES;
+                break;
+            case 'groups':
+                data = Object.fromEntries(state.cache.groups);
+                file = CONFIG.FILES.GROUPS;
+                break;
+            default:
+                return false;
+        }
+        
+        await fs.writeFile(file, JSON.stringify(data, null, 2));
+        return true;
+    } catch (error) {
+        console.error(`❌ Erreur sauvegarde ${type}:`, error.message);
+        return false;
+    }
+}
+
+// Nettoyage des données expirées
+async function cleanupExpiredData() {
+    try {
+        const now = new Date();
+        let cleaned = 0;
+        
+        // Nettoyer les codes expirés
+        for (const [phone, codeData] of state.cache.codes) {
+            if (new Date(codeData.expiresAt) < now) {
+                state.cache.codes.delete(phone);
+                cleaned++;
+            }
+        }
+        
+        // Désactiver les utilisateurs expirés
+        for (const [phone, userData] of state.cache.users) {
+            if (userData.active && userData.activatedAt) {
+                const daysSince = (now.getTime() - new Date(userData.activatedAt).getTime()) / 86400000;
+                if (daysSince > CONFIG.USAGE_DAYS) {
+                    userData.active = false;
+                    state.cache.users.set(phone, userData);
+                    cleaned++;
+                }
+            }
+        }
+        
+        if (cleaned > 0) {
+            await Promise.all([
+                saveData('codes'),
+                saveData('users')
+            ]);
+            console.log(`🧹 ${cleaned} éléments nettoyés`);
+        }
+    } catch (error) {
+        console.error('❌ Erreur nettoyage:', error.message);
     }
 }
 
@@ -99,96 +167,161 @@ function generateCode() {
     return code;
 }
 
-// Fonctions base de données rapides
+// Fonctions base de données JSON
 const db = {
     async createCode(phone) {
         const code = generateCode();
         const expiresAt = new Date(Date.now() + CONFIG.CODE_EXPIRY_HOURS * 3600000);
         
-        await state.db.execute(
-            'INSERT INTO codes (phone, code, expires_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE code=?, expires_at=?, used=FALSE',
-            [phone, code, expiresAt, code, expiresAt]
-        );
+        const codeData = {
+            phone,
+            code,
+            used: false,
+            expiresAt: expiresAt.toISOString(),
+            createdAt: new Date().toISOString()
+        };
+        
+        state.cache.codes.set(phone, codeData);
+        await saveData('codes');
+        
         return code;
     },
 
     async validateCode(phone, inputCode) {
-        const [rows] = await state.db.execute(
-            'SELECT * FROM codes WHERE phone=? AND used=FALSE AND expires_at > NOW()',
-            [phone]
-        );
-        
-        if (!rows[0] || rows[0].code.replace('-', '') !== inputCode.replace(/[-\s]/g, '').toUpperCase()) {
-            return false;
-        }
-
-        // Transaction atomique
-        const connection = await state.db.getConnection();
         try {
-            await connection.beginTransaction();
+            const codeData = state.cache.codes.get(phone);
             
-            await connection.execute('UPDATE codes SET used=TRUE WHERE phone=?', [phone]);
-            await connection.execute(
-                'INSERT INTO users (phone, active, activated_at) VALUES (?, TRUE, NOW()) ON DUPLICATE KEY UPDATE active=TRUE, activated_at=NOW()',
-                [phone]
-            );
+            if (!codeData || codeData.used || new Date(codeData.expiresAt) < new Date()) {
+                return false;
+            }
             
-            await connection.commit();
+            if (codeData.code.replace('-', '') !== inputCode.replace(/[-\s]/g, '').toUpperCase()) {
+                return false;
+            }
+            
+            // Marquer le code comme utilisé
+            codeData.used = true;
+            state.cache.codes.set(phone, codeData);
+            
+            // Activer l'utilisateur
+            const userData = state.cache.users.get(phone) || {};
+            userData.phone = phone;
+            userData.active = true;
+            userData.activatedAt = new Date().toISOString();
+            userData.createdAt = userData.createdAt || new Date().toISOString();
+            
+            state.cache.users.set(phone, userData);
+            
+            // Sauvegarder les deux fichiers
+            await Promise.all([
+                saveData('codes'),
+                saveData('users')
+            ]);
+            
             return true;
         } catch (error) {
-            await connection.rollback();
+            console.error('❌ Erreur validation:', error.message);
             return false;
-        } finally {
-            connection.release();
         }
     },
 
     async isAuthorized(phone) {
-        const [rows] = await state.db.execute(
-            'SELECT activated_at FROM users WHERE phone=? AND active=TRUE',
-            [phone]
-        );
-        
-        if (!rows[0]) return false;
-        
-        const daysSince = (Date.now() - new Date(rows[0].activated_at).getTime()) / (24 * 3600000);
-        if (daysSince > CONFIG.USAGE_DAYS) {
-            await state.db.execute('UPDATE users SET active=FALSE WHERE phone=?', [phone]);
+        try {
+            const userData = state.cache.users.get(phone);
+            
+            if (!userData || !userData.active) return false;
+            
+            const daysSince = (Date.now() - new Date(userData.activatedAt).getTime()) / 86400000;
+            
+            if (daysSince > CONFIG.USAGE_DAYS) {
+                userData.active = false;
+                state.cache.users.set(phone, userData);
+                await saveData('users');
+                return false;
+            }
+            
+            return true;
+        } catch (error) {
+            console.error('❌ Erreur autorisation:', error.message);
             return false;
         }
-        return true;
     },
 
     async addGroup(groupId, name, addedBy) {
         try {
-            await state.db.execute(
-                'INSERT INTO groups_list (group_id, name, added_by) VALUES (?, ?, ?)',
-                [groupId, name, addedBy]
-            );
+            if (state.cache.groups.has(groupId)) {
+                return false; // Déjà existe
+            }
+            
+            const groupData = {
+                groupId,
+                name,
+                addedBy,
+                addedAt: new Date().toISOString()
+            };
+            
+            state.cache.groups.set(groupId, groupData);
+            await saveData('groups');
+            
             return true;
         } catch (error) {
-            return false; // Déjà existe
+            console.error('❌ Erreur ajout groupe:', error.message);
+            return false;
         }
     },
 
     async getUserGroups(phone) {
-        const [rows] = await state.db.execute(
-            'SELECT group_id, name FROM groups_list WHERE added_by=?',
-            [phone]
-        );
-        return rows;
+        try {
+            const userGroups = [];
+            
+            for (const [groupId, groupData] of state.cache.groups) {
+                if (groupData.addedBy === phone) {
+                    userGroups.push({
+                        group_id: groupData.groupId,
+                        name: groupData.name
+                    });
+                }
+            }
+            
+            return userGroups;
+        } catch (error) {
+            console.error('❌ Erreur groupes utilisateur:', error.message);
+            return [];
+        }
     },
 
     async getStats() {
-        const [results] = await state.db.execute(`
-            SELECT 
-                (SELECT COUNT(*) FROM users) as total_users,
-                (SELECT COUNT(*) FROM users WHERE active=TRUE) as active_users,
-                (SELECT COUNT(*) FROM codes) as total_codes,
-                (SELECT COUNT(*) FROM codes WHERE used=TRUE) as used_codes,
-                (SELECT COUNT(*) FROM groups_list) as total_groups
-        `);
-        return results[0];
+        try {
+            let activeUsers = 0;
+            let usedCodes = 0;
+            
+            // Compter les utilisateurs actifs
+            for (const [phone, userData] of state.cache.users) {
+                if (userData.active) activeUsers++;
+            }
+            
+            // Compter les codes utilisés
+            for (const [phone, codeData] of state.cache.codes) {
+                if (codeData.used) usedCodes++;
+            }
+            
+            return {
+                total_users: state.cache.users.size,
+                active_users: activeUsers,
+                total_codes: state.cache.codes.size,
+                used_codes: usedCodes,
+                total_groups: state.cache.groups.size
+            };
+        } catch (error) {
+            console.error('❌ Erreur stats:', error.message);
+            return {
+                total_users: 0,
+                active_users: 0,
+                total_codes: 0,
+                used_codes: 0,
+                total_groups: 0
+            };
+        }
     }
 };
 
@@ -198,7 +331,7 @@ app.use(express.json({ limit: '1mb' }));
 
 app.get('/', (req, res) => {
     const html = state.ready ? 
-        `<h1 style="color:green">✅ Bot En Ligne</h1><p>🕒 ${new Date().toLocaleString()}</p>` :
+        `<h1 style="color:green">✅ Bot En Ligne</h1><p>🕒 ${new Date().toLocaleString()}</p><p>📄 JSON Files</p>` :
         state.qr ? 
         `<h1>📱 Scanner QR Code</h1><img src="data:image/png;base64,${state.qr}"><script>setTimeout(()=>location.reload(),30000)</script>` :
         `<h1>🔄 Initialisation...</h1><script>setTimeout(()=>location.reload(),10000)</script>`;
@@ -209,15 +342,19 @@ app.get('/', (req, res) => {
 app.get('/health', (req, res) => {
     res.json({ 
         status: state.ready ? 'online' : 'offline',
+        database: 'json-files',
         uptime: Math.floor(process.uptime()),
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        cache_size: {
+            users: state.cache.users.size,
+            codes: state.cache.codes.size,
+            groups: state.cache.groups.size
+        }
     });
 });
 
 // Initialisation client WhatsApp
 async function initClient() {
-    const sessionPath = path.join(__dirname, '.wwebjs_auth');
-    
     state.client = new Client({
         authStrategy: new LocalAuth({ clientId: 'whatsapp-bot' }),
         puppeteer: {
@@ -253,7 +390,7 @@ async function initClient() {
         setTimeout(async () => {
             try {
                 await state.client.sendMessage(CONFIG.ADMIN_NUMBER, 
-                    `🎉 *BOT EN LIGNE*\n✅ MySQL connecté\n🕒 ${new Date().toLocaleString()}`);
+                    `🎉 *BOT EN LIGNE*\n✅ JSON Files connecté\n🕒 ${new Date().toLocaleString()}`);
             } catch (e) {}
         }, 3000);
     });
@@ -289,10 +426,19 @@ async function initClient() {
                     
                 } else if (cmd === '/stats') {
                     const stats = await db.getStats();
-                    await msg.reply(`📊 *STATS*\n👥 Total: ${stats.total_users}\n✅ Actifs: ${stats.active_users}\n🔑 Codes: ${stats.total_codes}/${stats.used_codes}\n📢 Groupes: ${stats.total_groups}`);
+                    await msg.reply(`📊 *STATS JSON*\n👥 Total: ${stats.total_users}\n✅ Actifs: ${stats.active_users}\n🔑 Codes: ${stats.total_codes}/${stats.used_codes}\n📢 Groupes: ${stats.total_groups}`);
+                    
+                } else if (cmd === '/backup') {
+                    // Sauvegarder tout
+                    await Promise.all([
+                        saveData('users'),
+                        saveData('codes'),
+                        saveData('groups')
+                    ]);
+                    await msg.reply('✅ Backup effectué!');
                     
                 } else if (cmd === '/help') {
-                    await msg.reply('🤖 *ADMIN*\n• /gencode [num] - Créer code\n• /stats - Statistiques\n• /help - Aide');
+                    await msg.reply('🤖 *ADMIN*\n• /gencode [num] - Créer code\n• /stats - Statistiques\n• /backup - Sauvegarder\n• /help - Aide');
                 }
                 return;
             }
@@ -317,10 +463,10 @@ async function initClient() {
 
             // Commandes utilisateur
             if (cmd === '/status') {
-                const [user] = await state.db.execute('SELECT activated_at FROM users WHERE phone=?', [phone]);
-                const remaining = Math.ceil(CONFIG.USAGE_DAYS - (Date.now() - new Date(user[0].activated_at).getTime()) / 86400000);
+                const userData = state.cache.users.get(phone);
+                const remaining = Math.ceil(CONFIG.USAGE_DAYS - (Date.now() - new Date(userData.activatedAt).getTime()) / 86400000);
                 const groups = await db.getUserGroups(phone);
-                await msg.reply(`📊 *STATUT*\n🟢 Actif\n📅 ${remaining} jours restants\n📢 ${groups.length} groupes`);
+                await msg.reply(`📊 *STATUT*\n🟢 Actif\n📅 ${remaining} jours restants\n📢 ${groups.length} groupes\n📄 JSON Files`);
                 
             } else if (cmd === '/addgroup') {
                 const chat = await msg.getChat();
@@ -356,7 +502,7 @@ async function initClient() {
                 
             } else if (cmd === '/help') {
                 const groups = await db.getUserGroups(phone);
-                await msg.reply(`🤖 *COMMANDES*\n• /broadcast [msg] - Diffuser\n• /addgroup - Ajouter groupe\n• /status - Mon statut\n• /help - Aide\n\n📊 ${groups.length} groupe(s)`);
+                await msg.reply(`🤖 *COMMANDES*\n• /broadcast [msg] - Diffuser\n• /addgroup - Ajouter groupe\n• /status - Mon statut\n• /help - Aide\n\n📊 ${groups.length} groupe(s)\n📄 JSON Files`);
             }
             
         } catch (error) {
@@ -368,27 +514,37 @@ async function initClient() {
     await state.client.initialize();
 }
 
-// Nettoyage périodique
+// Nettoyage et sauvegarde périodiques
 setInterval(async () => {
     try {
-        await state.db.execute('DELETE FROM codes WHERE expires_at < NOW()');
-        await state.db.execute('UPDATE users SET active=FALSE WHERE active=TRUE AND activated_at < DATE_SUB(NOW(), INTERVAL ? DAY)', [CONFIG.USAGE_DAYS]);
-    } catch (e) {}
+        await cleanupExpiredData();
+        
+        // Sauvegarde préventive toutes les heures
+        await Promise.all([
+            saveData('users'),
+            saveData('codes'),
+            saveData('groups')
+        ]);
+        
+        console.log('💾 Sauvegarde périodique effectuée');
+    } catch (e) {
+        console.error('❌ Erreur sauvegarde périodique:', e.message);
+    }
 }, 3600000); // 1h
 
 // Keep-alive pour Render
 setInterval(() => {
-    console.log(`💗 Uptime: ${Math.floor(process.uptime())}s - ${state.ready ? 'ONLINE' : 'OFFLINE'}`);
+    console.log(`💗 Uptime: ${Math.floor(process.uptime())}s - ${state.ready ? 'ONLINE' : 'OFFLINE'} - 📄 JSON (${state.cache.users.size}/${state.cache.codes.size}/${state.cache.groups.size})`);
 }, 300000);
 
 // Démarrage
 async function start() {
     console.log('🚀 DÉMARRAGE BOT WHATSAPP');
-    console.log('💾 Base: MySQL');
+    console.log('💾 Base: Fichiers JSON (100% GRATUIT)');
     console.log('🌐 Hébergeur: Render');
     
     if (!(await initDB())) {
-        console.error('❌ Échec connexion MySQL');
+        console.error('❌ Échec initialisation fichiers');
         process.exit(1);
     }
     
@@ -399,19 +555,30 @@ async function start() {
     await initClient();
 }
 
-// Arrêt propre
+// Arrêt propre avec sauvegarde
 async function shutdown() {
     console.log('🛑 Arrêt en cours...');
     
+    // Sauvegarder toutes les données avant l'arrêt
+    try {
+        await Promise.all([
+            saveData('users'),
+            saveData('codes'),
+            saveData('groups')
+        ]);
+        console.log('💾 Données sauvegardées');
+    } catch (e) {
+        console.error('❌ Erreur sauvegarde finale:', e.message);
+    }
+    
     if (state.client) {
         try {
-            await state.client.sendMessage(CONFIG.ADMIN_NUMBER, '🛑 Bot arrêté - redémarrage auto');
+            await state.client.sendMessage(CONFIG.ADMIN_NUMBER, '🛑 Bot arrêté - données sauvegardées');
         } catch (e) {}
         await state.client.destroy();
     }
     
     if (state.server) state.server.close();
-    if (state.db) await state.db.end();
     
     console.log('✅ Arrêt terminé');
     process.exit(0);
