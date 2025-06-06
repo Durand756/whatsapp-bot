@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 
-// Configuration globale 
+// Configuration globale
 const CONFIG = {
     ADMIN_NUMBER: '237651104356@c.us',
     DATA_FILE: path.join(__dirname, 'bot_data.json'),
@@ -236,6 +236,28 @@ client.on('disconnected', async (reason) => {
     }
 });
 
+// NOUVEAU: Gestion des appels (FIX PRINCIPAL)
+client.on('call', async (call) => {
+    try {
+        console.log(`📞 Appel reçu de ${call.from}:`, call.isVideo ? 'Vidéo' : 'Audio');
+        
+        // Rejeter automatiquement l'appel
+        await call.reject();
+        
+        // Optionnel: Envoyer un message d'explication
+        setTimeout(async () => {
+            try {
+                await client.sendMessage(call.from, '🤖 *Bot automatique*\n\nJe ne peux pas répondre aux appels.\nUtilisez les commandes texte uniquement.\n\nTapez `/help` pour voir les commandes disponibles.');
+            } catch (error) {
+                console.error('❌ Erreur message appel:', error.message);
+            }
+        }, 2000);
+        
+    } catch (error) {
+        console.error('❌ Erreur gestion appel:', error.message);
+    }
+});
+
 // Fonction d'envoi sécurisée
 async function sendMessage(chatId, text) {
     try {
@@ -247,20 +269,45 @@ async function sendMessage(chatId, text) {
     }
 }
 
-// Traitement des messages
+// Traitement des messages (AMÉLIORÉ)
 client.on('message', async (message) => {
-    if (!botState.isReady || !message.body?.trim()) return;
+    if (!botState.isReady) return;
     
     try {
+        // Ignorer les messages système et autres types non-texte
+        if (!message.body || message.type !== 'chat') {
+            // Log pour debug mais ne pas traiter
+            if (message.type === 'ptt') {
+                console.log('🎤 Message vocal ignoré');
+            } else if (message.hasMedia) {
+                console.log('📎 Média ignoré');
+            }
+            return;
+        }
+        
+        const text = message.body.trim();
+        if (!text) return;
+        
         const contact = await message.getContact();
         if (!contact || contact.isMe) return;
         
         const userPhone = contact.id._serialized;
-        const text = message.body.trim();
         botState.lastActivity = Date.now();
         
         // Traiter seulement les commandes
-        if (!text.startsWith('/')) return;
+        if (!text.startsWith('/')) {
+            // Répondre aux messages non-commandes avec info
+            if (text.length < 50) { // Éviter de répondre aux longs messages
+                setTimeout(async () => {
+                    try {
+                        await message.reply('🤖 Utilisez `/help` pour voir les commandes disponibles');
+                    } catch (error) {
+                        console.error('❌ Erreur réponse auto:', error.message);
+                    }
+                }, 1000);
+            }
+            return;
+        }
         
         const cmd = text.toLowerCase();
         console.log(`📨 ${userPhone}: ${cmd}`);
@@ -376,7 +423,7 @@ client.on('message', async (message) => {
             await message.reply(`📊 *RÉSULTAT*\n✅ Succès: ${success}\n❌ Échecs: ${failed}`);
             
         } else if (cmd === '/help') {
-            await message.reply('🤖 *COMMANDES*\n• /broadcast [msg] - Diffuser\n• /addgroup - Ajouter groupe\n• /status - Mon statut\n• /help - Aide');
+            await message.reply('🤖 *COMMANDES*\n• /broadcast [msg] - Diffuser\n• /addgroup - Ajouter groupe\n• /status - Mon statut\n• /help - Aide\n\n⚠️ *Note:* Je ne réponds qu\'aux messages texte et commandes.');
         }
         
     } catch (error) {
@@ -389,18 +436,38 @@ client.on('message', async (message) => {
     }
 });
 
-// Maintien de la connexion
+// NOUVEAU: Gestion des erreurs spécifiques
+client.on('message_create', (message) => {
+    // Ignorer silencieusement les messages créés par le bot
+    if (message.fromMe) return;
+});
+
+client.on('message_revoke_everyone', (after, before) => {
+    // Ignorer les messages supprimés
+    console.log('🗑️ Message supprimé ignoré');
+});
+
+client.on('message_revoke_me', (message) => {
+    // Ignorer les messages supprimés pour moi
+    console.log('🗑️ Message supprimé pour moi ignoré');
+});
+
+// Maintien de la connexion (AMÉLIORÉ)
 setInterval(() => {
     if (botState.isReady) {
         // Ping pour maintenir la connexion
         client.getState().then(state => {
             if (state !== 'CONNECTED') {
                 console.log('⚠️ État connexion:', state);
-                botState.isReady = false;
-                attemptReconnect();
+                if (state === 'TIMEOUT' || state === 'CONFLICT' || state === 'UNLAUNCHED') {
+                    botState.isReady = false;
+                    attemptReconnect();
+                }
             }
         }).catch(error => {
             console.error('❌ Erreur vérification état:', error.message);
+            botState.isReady = false;
+            attemptReconnect();
         });
     }
 }, 30000); // Vérifier toutes les 30 secondes
@@ -410,7 +477,7 @@ setInterval(() => {
     if (botState.isReady) saveData();
 }, 300000); // Toutes les 5 minutes
 
-// Gestion des signaux système
+// Gestion des signaux système (AMÉLIORÉ)
 process.on('SIGINT', async () => {
     console.log('\n🛑 Arrêt du bot...');
     try {
@@ -419,27 +486,42 @@ process.on('SIGINT', async () => {
         }
         if (botState.server) botState.server.close();
         saveData();
+        await client.destroy();
         process.exit(0);
     } catch (error) {
+        console.error('❌ Erreur arrêt:', error.message);
         process.exit(1);
     }
 });
 
 process.on('uncaughtException', (error) => {
     console.error('❌ Erreur critique:', error.message);
-    if (!botState.isReady) {
-        attemptReconnect();
+    // Ne pas redémarrer automatiquement sur erreur critique
+    if (error.message.includes('Session closed') || error.message.includes('Navigation failed')) {
+        console.log('🔄 Tentative de récupération...');
+        if (!botState.isReady) {
+            attemptReconnect();
+        }
     }
 });
 
 process.on('unhandledRejection', (reason, promise) => {
     console.error('❌ Promise rejetée:', reason);
+    // Ignorer certaines erreurs courantes
+    if (reason && typeof reason === 'object' && reason.message) {
+        if (reason.message.includes('Execution context was destroyed') ||
+            reason.message.includes('Session closed') ||
+            reason.message.includes('Target closed')) {
+            console.log('⚠️ Erreur de session ignorée');
+            return;
+        }
+    }
 });
 
 // Fonction de démarrage
 async function startBot() {
     console.log('🚀 DÉMARRAGE BOT WHATSAPP 24/7');
-    console.log('🤖 Version Optimisée - Moins de 800 lignes');
+    console.log('🤖 Version Optimisée - Gestion Appels/Médias');
     
     if (!loadData()) {
         console.error('❌ Erreur chargement données');
@@ -451,6 +533,7 @@ async function startBot() {
     
     try {
         await client.initialize();
+        console.log('✅ Initialisation réussie');
     } catch (error) {
         console.error('❌ Erreur initialisation:', error.message);
         await attemptReconnect();
