@@ -21,46 +21,55 @@ const state = {
     reconnects: 0, maxReconnects: 3
 };
 
-// Auth Google Drive avec intervalle corrigé
-class DriveAuth extends RemoteAuth {
-    constructor(options = {}) {
-        super({
-            ...options,
-            backupSyncIntervalMs: CONFIG.BACKUP_INTERVAL_MS,
-            dataPath: null
-        });
-        this.clientId = options.clientId || 'default';
+// Store Google Drive pour RemoteAuth
+class DriveStore {
+    constructor() {
+        this.sessionData = null;
     }
 
-    async setup() {
-        console.log('🔧 Setup DriveAuth avec intervalle:', CONFIG.BACKUP_INTERVAL_MS);
-    }
-
-    async logout() {
-        console.log('🔌 Logout session');
-        if (state.fileIds.SESSION) await saveToDrive('SESSION', {});
-    }
-
-    async getAuthEventPayload() {
-        if (!state.fileIds.SESSION) return null;
+    async sessionExists(sessionId) {
         try {
+            if (!state.fileIds.SESSION) return false;
             const data = await loadFromDrive('SESSION');
-            return data.sessionData || null;
+            return !!(data && data.sessionData);
         } catch (error) {
-            console.error('❌ Erreur récupération session:', error.message);
+            console.error('❌ Erreur vérification session:', error.message);
+            return false;
+        }
+    }
+
+    async save(sessionId, sessionData) {
+        try {
+            if (!state.fileIds.SESSION) return;
+            await saveToDrive('SESSION', {
+                sessionId,
+                sessionData,
+                timestamp: new Date().toISOString()
+            });
+            console.log('💾 Session sauvegardée sur Drive');
+        } catch (error) {
+            console.error('❌ Erreur sauvegarde session:', error.message);
+        }
+    }
+
+    async extract(sessionId) {
+        try {
+            if (!state.fileIds.SESSION) return null;
+            const data = await loadFromDrive('SESSION');
+            return data?.sessionData || null;
+        } catch (error) {
+            console.error('❌ Erreur extraction session:', error.message);
             return null;
         }
     }
 
-    async setAuthEventPayload(sessionData) {
-        if (!state.fileIds.SESSION || !sessionData) return;
+    async delete(sessionId) {
         try {
-            await saveToDrive('SESSION', {
-                sessionData, timestamp: new Date().toISOString(), clientId: this.clientId
-            });
-            console.log('💾 Session sauvegardée');
+            if (!state.fileIds.SESSION) return;
+            await saveToDrive('SESSION', {});
+            console.log('🗑️ Session supprimée');
         } catch (error) {
-            console.error('❌ Erreur sauvegarde session:', error.message);
+            console.error('❌ Erreur suppression session:', error.message);
         }
     }
 }
@@ -349,8 +358,20 @@ async function reconnect() {
 }
 
 async function initClient() {
+    // Attendre que Google Drive soit prêt
+    if (!state.drive || !state.fileIds.SESSION) {
+        console.log('⏳ Attente initialisation Google Drive...');
+        await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+
+    const driveStore = new DriveStore();
+    
     state.client = new Client({
-        authStrategy: new DriveAuth({ clientId: 'bot-drive' }),
+        authStrategy: new RemoteAuth({
+            store: driveStore,
+            backupSyncIntervalMs: CONFIG.BACKUP_INTERVAL_MS,
+            clientId: 'whatsapp-bot-drive'
+        }),
         puppeteer: {
             headless: true,
             args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
