@@ -4,69 +4,52 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 
-// Configuration centralisée
+// Configuration
 const CONFIG = {
-    ADMIN_NUMBER: '237679199601@c.us',
+    ADMIN_NUMBER: '237651104356@c.us',
     DATA_FILE: path.join(__dirname, 'users_data.json'),
     USAGE_DURATION: 30 * 24 * 60 * 60 * 1000, // 30 jours
     SESSION_PATH: path.join(__dirname, '.wwebjs_auth'),
     PORT: 3000,
     CODE_EXPIRY: 24 * 60 * 60 * 1000, // 24h
-    QR_TIMEOUT: 45000 // 45s
+    QR_TIMEOUT: 45000
 };
 
-// État global simplifié
+// État global
 let state = {
     isReady: false,
     currentQR: null,
     server: null,
-    userData: { users: {}, accessCodes: {}, groups: {} }
+    userData: { users: {}, accessCodes: {}, groups: {} },
+    botMessages: new Set() // Pour tracker les messages du bot
 };
 
-// Serveur Express minimal
+// Serveur Express
 const app = express();
 app.get('/', (req, res) => {
-    const html = state.currentQR ? generateQRPage() : generateSuccessPage();
+    const html = state.isReady ? 
+        `<!DOCTYPE html><html><head><title>Bot Connecté</title><style>
+        body{font-family:Arial;text-align:center;margin-top:50px;background:#25D366;color:white}
+        .container{background:rgba(255,255,255,0.1);padding:40px;border-radius:20px;display:inline-block}
+        </style></head><body><div class="container"><h1>✅ Bot WhatsApp Connecté!</h1>
+        <p>Le bot est opérationnel et prêt à recevoir des commandes.</p></div></body></html>` :
+        
+        (state.currentQR ? 
+        `<!DOCTYPE html><html><head><title>QR Code</title><style>
+        body{font-family:Arial;text-align:center;margin-top:50px;background:#25D366;color:white}
+        .qr{background:white;padding:20px;border-radius:15px;margin:20px;display:inline-block}
+        .btn{background:#128C7E;color:white;border:none;padding:10px 20px;border-radius:5px;cursor:pointer}
+        </style></head><body><h1>📱 Connexion WhatsApp</h1>
+        <div class="qr"><img src="data:image/png;base64,${state.currentQR}" alt="QR Code"/></div>
+        <p>Scannez avec WhatsApp</p><button class="btn" onclick="location.reload()">🔄 Actualiser</button>
+        <script>setTimeout(()=>location.reload(),45000)</script></body></html>` :
+        
+        `<!DOCTYPE html><html><head><title>En attente</title></head><body style="text-align:center;margin-top:100px">
+        <h1>🔄 Initialisation...</h1><p>Le bot se connecte...</p></body></html>`);
     res.send(html);
 });
 
-function generateQRPage() {
-    return `<!DOCTYPE html>
-<html><head><title>WhatsApp Bot - QR Code</title><meta charset="utf-8">
-<style>
-body{font-family:Arial;display:flex;align-items:center;justify-content:center;min-height:100vh;
-background:linear-gradient(135deg,#25D366,#128C7E);color:white;margin:0;padding:20px}
-.container{text-align:center;background:rgba(255,255,255,0.1);padding:30px;border-radius:20px;
-backdrop-filter:blur(15px);box-shadow:0 10px 40px rgba(0,0,0,0.3)}
-.qr{background:white;padding:20px;border-radius:15px;margin:20px auto;display:inline-block}
-.qr img{max-width:280px;width:100%;height:auto}
-.btn{background:#25D366;color:white;border:none;padding:12px 25px;border-radius:25px;
-cursor:pointer;margin:10px;font-weight:bold}
-.btn:hover{background:#128C7E}
-</style></head><body>
-<div class="container">
-<h1>📱 Connexion WhatsApp</h1>
-<div class="qr"><img src="data:image/png;base64,${state.currentQR}" alt="QR Code"/></div>
-<p>Scannez le QR code avec WhatsApp</p>
-<button class="btn" onclick="location.reload()">🔄 Actualiser</button>
-</div>
-<script>setTimeout(()=>location.reload(),45000)</script>
-</body></html>`;
-}
-
-function generateSuccessPage() {
-    return `<!DOCTYPE html>
-<html><head><title>WhatsApp Bot - Connecté</title><meta charset="utf-8">
-<style>body{font-family:Arial;display:flex;align-items:center;justify-content:center;
-min-height:100vh;background:linear-gradient(135deg,#25D366,#128C7E);color:white;text-align:center}
-.container{background:rgba(255,255,255,0.1);padding:40px;border-radius:20px;backdrop-filter:blur(15px)}
-</style></head><body>
-<div class="container"><h1>✅ Bot Connecté!</h1><p>Le bot est opérationnel</p></div>
-<script>setTimeout(()=>window.close(),10000)</script>
-</body></html>`;
-}
-
-// Utilitaires de données
+// Utilitaires
 function loadData() {
     try {
         if (fs.existsSync(CONFIG.DATA_FILE)) {
@@ -83,10 +66,7 @@ function loadData() {
 function saveData() {
     try {
         cleanupExpiredData();
-        fs.writeFileSync(CONFIG.DATA_FILE, JSON.stringify({
-            ...state.userData,
-            lastSave: Date.now()
-        }, null, 2));
+        fs.writeFileSync(CONFIG.DATA_FILE, JSON.stringify(state.userData, null, 2));
         return true;
     } catch (error) {
         console.error('❌ Erreur sauvegarde:', error.message);
@@ -151,14 +131,12 @@ function validateAccessCode(phoneNumber, inputCode) {
     
     if (normalizedInput !== normalizedStored) return false;
     
-    // Vérifier expiration
     if (Date.now() - accessData.generated > CONFIG.CODE_EXPIRY) {
         delete state.userData.accessCodes[phoneNumber];
         saveData();
         return false;
     }
     
-    // Autoriser utilisateur
     accessData.used = true;
     state.userData.users[phoneNumber] = {
         authorized: true,
@@ -172,7 +150,7 @@ function validateAccessCode(phoneNumber, inputCode) {
 function startWebServer() {
     if (!state.server) {
         state.server = app.listen(CONFIG.PORT, () => {
-            console.log(`🌐 QR Code: http://localhost:${CONFIG.PORT}`);
+            console.log(`🌐 Interface: http://localhost:${CONFIG.PORT}`);
         });
     }
 }
@@ -184,26 +162,22 @@ function stopWebServer() {
     }
 }
 
-// Client WhatsApp avec configuration optimisée
+// Client WhatsApp
 const client = new Client({
     authStrategy: new LocalAuth({
-        clientId: "whatsapp-bot-optimized",
+        clientId: "whatsapp-bot-v4",
         dataPath: CONFIG.SESSION_PATH
     }),
     puppeteer: {
         headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-web-security',
-            '--disable-features=VizDisplayCompositor'
-        ]
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
     }
 });
 
-// Événements WhatsApp
+// Événements
 client.on('qr', async (qr) => {
+    if (state.isReady) return; // Ne pas générer de QR si déjà connecté
+    
     try {
         console.log('🔄 Génération QR Code...');
         const qrBase64 = await QRCode.toDataURL(qr, { width: 300 });
@@ -211,7 +185,7 @@ client.on('qr', async (qr) => {
         startWebServer();
         
         setTimeout(() => {
-            state.currentQR = null;
+            if (!state.isReady) state.currentQR = null;
         }, CONFIG.QR_TIMEOUT);
         
     } catch (error) {
@@ -222,13 +196,14 @@ client.on('qr', async (qr) => {
 client.on('ready', async () => {
     state.isReady = true;
     state.currentQR = null;
-    setTimeout(stopWebServer, 2000);
     
-    console.log('🎉 BOT CONNECTÉ AVEC SUCCÈS!');
+    console.log('🎉 BOT CONNECTÉ!');
     console.log(`📞 Admin: ${CONFIG.ADMIN_NUMBER.replace('@c.us', '')}`);
     console.log(`🕒 ${new Date().toLocaleString('fr-FR')}`);
     
-    // Message de confirmation
+    // Démarrer le serveur pour l'interface de statut
+    startWebServer();
+    
     try {
         await client.sendMessage(CONFIG.ADMIN_NUMBER, 
             `🎉 *BOT CONNECTÉ*\n✅ Opérationnel\n🕒 ${new Date().toLocaleString('fr-FR')}`);
@@ -257,27 +232,27 @@ client.on('disconnected', (reason) => {
     }
 });
 
-// Traitement des messages - VERSION CORRIGÉE
+// Traitement des messages
 client.on('message', async (message) => {
-    // Vérifications de base
     if (!state.isReady || !message.body?.trim()) return;
     
     try {
-        // Obtenir les informations du contact
         const contact = await message.getContact();
-        if (!contact || contact.isMe) return;
+        if (!contact) return;
         
         const userNumber = contact.id._serialized;
         const messageText = message.body.trim();
+        
+        // Vérifier si c'est un message du bot (éviter les boucles)
+        if (contact.isMe || state.botMessages.has(message.id.id)) return;
         
         // Traiter seulement les commandes
         if (!messageText.startsWith('/')) return;
         
         const command = messageText.toLowerCase();
+        console.log(`📨 ${userNumber}: ${command}`);
         
-        console.log(`📨 Message reçu de ${userNumber}: ${command}`);
-        
-        // Commandes administrateur
+        // Commandes admin
         if (userNumber === CONFIG.ADMIN_NUMBER) {
             await handleAdminCommand(message, command);
             return;
@@ -287,51 +262,80 @@ client.on('message', async (message) => {
         if (command.startsWith('/activate ')) {
             const code = messageText.substring(10).trim();
             if (!code) {
-                await message.reply('❌ Format: `/activate XXXX XXXX`');
+                await sendReply(message, '❌ Format: `/activate XXXX XXXX`');
                 return;
             }
             
             if (validateAccessCode(userNumber, code)) {
                 const expiry = new Date(Date.now() + CONFIG.USAGE_DURATION).toLocaleDateString('fr-FR');
-                await message.reply(`🎉 *ACCÈS ACTIVÉ*\n📅 Expire: ${expiry}\n\nCommandes:\n• /broadcast [msg] - Diffuser\n• /addgroup - Ajouter groupe\n• /status - Mon statut`);
+                await sendReply(message, `🎉 *ACCÈS ACTIVÉ*\n📅 Expire: ${expiry}\n\n*Commandes:*\n• /broadcast [msg] - Diffuser\n• /addgroup - Ajouter groupe\n• /status - Mon statut\n• /help - Aide`);
             } else {
-                await message.reply('❌ Code invalide ou expiré');
+                await sendReply(message, '❌ Code invalide ou expiré');
             }
             return;
         }
         
         // Vérifier autorisation
         if (!isUserAuthorized(userNumber)) {
-            await message.reply(`🔒 *Accès requis*\n\nContactez l'admin: ${CONFIG.ADMIN_NUMBER.replace('@c.us', '')}\nPuis: \`/activate CODE\``);
+            await sendReply(message, `🔒 *Accès requis*\n\nContactez l'admin: ${CONFIG.ADMIN_NUMBER.replace('@c.us', '')}\nPuis: \`/activate CODE\``);
             return;
         }
         
-        // Commandes utilisateur autorisé
+        // Commandes utilisateur
         await handleUserCommand(message, command, userNumber);
         
     } catch (error) {
-        console.error('❌ Erreur traitement message:', error.message);
+        console.error('❌ Erreur traitement:', error.message);
         try {
-            await message.reply('❌ Erreur interne');
-        } catch (replyError) {
-            console.error('❌ Erreur réponse:', replyError.message);
+            await sendReply(message, '❌ Erreur interne');
+        } catch (e) {
+            console.error('❌ Erreur réponse:', e.message);
         }
     }
 });
 
-// Gestionnaire commandes admin
+// Fonction pour envoyer une réponse et tracker les messages du bot
+async function sendReply(message, text) {
+    try {
+        const sentMessage = await message.reply(text);
+        // Ajouter l'ID du message envoyé par le bot
+        if (sentMessage && sentMessage.id) {
+            state.botMessages.add(sentMessage.id.id);
+        }
+        return sentMessage;
+    } catch (error) {
+        console.error('❌ Erreur envoi réponse:', error.message);
+        throw error;
+    }
+}
+
+// Fonction pour envoyer un message et tracker
+async function sendMessage(chatId, text) {
+    try {
+        const sentMessage = await client.sendMessage(chatId, text);
+        if (sentMessage && sentMessage.id) {
+            state.botMessages.add(sentMessage.id.id);
+        }
+        return sentMessage;
+    } catch (error) {
+        console.error('❌ Erreur envoi message:', error.message);
+        throw error;
+    }
+}
+
+// Gestionnaire admin
 async function handleAdminCommand(message, command) {
     try {
         if (command.startsWith('/gencode ')) {
             const number = message.body.substring(9).trim();
             if (!number) {
-                await message.reply('❌ Format: `/gencode [numéro]`');
+                await sendReply(message, '❌ Format: `/gencode [numéro]`');
                 return;
             }
             
             const formattedNumber = number.includes('@') ? number : `${number}@c.us`;
             const code = generateAccessCode(formattedNumber);
-            await message.reply(`✅ *CODE GÉNÉRÉ*\n👤 Pour: ${number}\n🔑 Code: \`${code}\`\n⏰ Valide 24h`);
+            await sendReply(message, `✅ *CODE GÉNÉRÉ*\n👤 Pour: ${number}\n🔑 Code: \`${code}\`\n⏰ Valide 24h`);
             
         } else if (command === '/stats') {
             const stats = {
@@ -340,18 +344,18 @@ async function handleAdminCommand(message, command) {
                 codes: Object.keys(state.userData.accessCodes).length,
                 groups: Object.keys(state.userData.groups).length
             };
-            await message.reply(`📊 *STATS*\n👥 Utilisateurs: ${stats.users}\n✅ Actifs: ${stats.active}\n🔑 Codes: ${stats.codes}\n📢 Groupes: ${stats.groups}`);
+            await sendReply(message, `📊 *STATISTIQUES*\n👥 Utilisateurs: ${stats.users}\n✅ Actifs: ${stats.active}\n🔑 Codes: ${stats.codes}\n📢 Groupes: ${stats.groups}`);
             
         } else if (command === '/help') {
-            await message.reply('🤖 *ADMIN*\n• /gencode [num] - Créer code\n• /stats - Statistiques\n• /help - Aide');
+            await sendReply(message, '🤖 *COMMANDES ADMIN*\n• /gencode [num] - Créer code\n• /stats - Statistiques\n• /help - Cette aide');
         }
     } catch (error) {
-        console.error('❌ Erreur commande admin:', error.message);
-        await message.reply('❌ Erreur commande admin');
+        console.error('❌ Erreur admin:', error.message);
+        await sendReply(message, '❌ Erreur commande admin');
     }
 }
 
-// Gestionnaire commandes utilisateur
+// Gestionnaire utilisateur
 async function handleUserCommand(message, command, userNumber) {
     try {
         if (command === '/status') {
@@ -359,18 +363,18 @@ async function handleUserCommand(message, command, userNumber) {
             const remaining = Math.ceil((user.authorizedAt + CONFIG.USAGE_DURATION - Date.now()) / (24 * 60 * 60 * 1000));
             const groupCount = Object.values(state.userData.groups).filter(g => g.addedBy === userNumber).length;
             
-            await message.reply(`📊 *STATUT*\n🟢 Actif\n📅 ${remaining} jours restants\n📢 ${groupCount} groupes`);
+            await sendReply(message, `📊 *MON STATUT*\n🟢 Actif\n📅 ${remaining} jours restants\n📢 ${groupCount} groupes enregistrés`);
             
         } else if (command === '/addgroup') {
             const chat = await message.getChat();
             if (!chat.isGroup) {
-                await message.reply('❌ Commande pour groupes uniquement');
+                await sendReply(message, '❌ Commande pour groupes uniquement');
                 return;
             }
             
             const groupId = chat.id._serialized;
             if (state.userData.groups[groupId]) {
-                await message.reply('ℹ️ Groupe déjà enregistré');
+                await sendReply(message, 'ℹ️ Groupe déjà enregistré');
             } else {
                 state.userData.groups[groupId] = {
                     name: chat.name,
@@ -378,73 +382,80 @@ async function handleUserCommand(message, command, userNumber) {
                     addedAt: Date.now()
                 };
                 saveData();
-                await message.reply(`✅ Groupe ajouté: ${chat.name}`);
+                await sendReply(message, `✅ Groupe ajouté: *${chat.name}*`);
             }
             
         } else if (command.startsWith('/broadcast ')) {
             const msg = message.body.substring(11).trim();
             if (!msg) {
-                await message.reply('❌ Format: `/broadcast [message]`');
+                await sendReply(message, '❌ Format: `/broadcast [votre message]`');
                 return;
             }
             
             await handleBroadcast(message, msg, userNumber);
             
         } else if (command === '/help') {
-            await message.reply('🤖 *COMMANDES*\n• /broadcast [msg] - Diffuser\n• /addgroup - Ajouter groupe\n• /status - Mon statut\n• /help - Aide');
+            await sendReply(message, '🤖 *COMMANDES DISPONIBLES*\n• /broadcast [msg] - Diffuser un message\n• /addgroup - Ajouter ce groupe\n• /status - Mon statut\n• /help - Cette aide');
         }
     } catch (error) {
-        console.error('❌ Erreur commande user:', error.message);
-        await message.reply('❌ Erreur commande');
+        console.error('❌ Erreur utilisateur:', error.message);
+        await sendReply(message, '❌ Erreur commande');
     }
 }
 
-// Fonction de diffusion optimisée
+// Fonction de diffusion
 async function handleBroadcast(message, broadcastMessage, userNumber) {
     try {
         const userGroups = Object.entries(state.userData.groups)
             .filter(([, group]) => group.addedBy === userNumber);
         
         if (userGroups.length === 0) {
-            await message.reply('❌ Aucun groupe. Utilisez `/addgroup` d\'abord');
+            await sendReply(message, '❌ Aucun groupe enregistré. Utilisez `/addgroup` d\'abord');
             return;
         }
         
-        await message.reply(`🚀 Diffusion vers ${userGroups.length} groupes...`);
+        await sendReply(message, `🚀 Diffusion vers ${userGroups.length} groupes...`);
         
         let success = 0, failed = 0;
         const contact = await message.getContact();
         
         for (const [groupId, groupInfo] of userGroups) {
             try {
-                const fullMessage = `📢 *Message diffusé*\n👤 ${contact.pushname || 'Utilisateur'}\n📅 ${new Date().toLocaleString('fr-FR')}\n\n${broadcastMessage}`;
-                await client.sendMessage(groupId, fullMessage);
+                const fullMessage = `📢 *Message diffusé*\n👤 De: ${contact.pushname || 'Utilisateur'}\n📅 ${new Date().toLocaleString('fr-FR')}\n\n${broadcastMessage}`;
+                await sendMessage(groupId, fullMessage);
                 success++;
-                await new Promise(resolve => setTimeout(resolve, 1000));
+                await new Promise(resolve => setTimeout(resolve, 1000)); // Délai entre envois
             } catch (error) {
                 failed++;
                 console.error(`❌ Erreur groupe ${groupId}:`, error.message);
             }
         }
         
-        await message.reply(`📊 *RÉSULTAT*\n✅ Succès: ${success}\n❌ Échecs: ${failed}`);
+        await sendReply(message, `📊 *RÉSULTAT DIFFUSION*\n✅ Succès: ${success}\n❌ Échecs: ${failed}`);
         
     } catch (error) {
         console.error('❌ Erreur broadcast:', error.message);
-        await message.reply('❌ Erreur de diffusion');
+        await sendReply(message, '❌ Erreur de diffusion');
     }
 }
 
+// Nettoyage périodique des messages trackés (éviter la surcharge mémoire)
+setInterval(() => {
+    if (state.botMessages.size > 1000) {
+        state.botMessages.clear();
+    }
+}, 60 * 60 * 1000); // Toutes les heures
+
 // Gestion des erreurs
 process.on('uncaughtException', (error) => {
-    console.error('❌ Erreur non gérée:', error.message);
+    console.error('❌ Erreur critique:', error.message);
 });
 
 process.on('SIGINT', async () => {
     console.log('\n🛑 Arrêt du bot...');
     try {
         if (state.isReady) {
-            await client.sendMessage(CONFIG.ADMIN_NUMBER, '🛑 Bot arrêté');
+            await sendMessage(CONFIG.ADMIN_NUMBER, '🛑 Bot arrêté');
         }
         stopWebServer();
         saveData();
@@ -457,11 +468,11 @@ process.on('SIGINT', async () => {
 // Sauvegarde périodique
 setInterval(() => {
     if (state.isReady) saveData();
-}, 5 * 60 * 1000);
+}, 5 * 60 * 1000); // Toutes les 5 minutes
 
 // Démarrage
 async function startBot() {
-    console.log('🚀 DÉMARRAGE BOT WHATSAPP');
+    console.log('🚀 DÉMARRAGE BOT WHATSAPP v4.0');
     
     if (!loadData()) {
         console.error('❌ Impossible de charger les données');
@@ -476,7 +487,8 @@ async function startBot() {
     await client.initialize();
 }
 
-console.log('🤖 WhatsApp Bot Optimisé v3.0');
+// Lancement
+console.log('🤖 WhatsApp Bot Optimisé v4.0 - Version Compacte');
 startBot().catch(error => {
     console.error('❌ Erreur fatale:', error.message);
     process.exit(1);
