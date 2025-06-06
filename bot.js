@@ -679,52 +679,61 @@ async function initClient() {
     });
 
     state.client.on('message', async (msg) => {
-        if (!state.ready || !msg.body || !msg.body.startsWith('/')) return;
-        
-        try {
-            const contact = await msg.getContact();
-            if (!contact || contact.isMe) return;
+    // Ignorer les messages qui ne sont pas des commandes ou les messages système
+    if (!state.ready || !msg.body || msg.fromMe) return;
+    
+    try {
+        const contact = await msg.getContact();
+        if (!contact || contact.isMe) return;
 
-            const phone = contact.id._serialized;
-            const text = msg.body.trim();
-            const args = text.split(' ').slice(1);
-            const cmd = text.split(' ')[0].toLowerCase();
+        const phone = contact.id._serialized;
+        const text = msg.body.trim();
+        const args = text.split(' ').slice(1);
+        const cmd = text.split(' ')[0].toLowerCase();
 
-            // Commandes Admin
-            if (phone === CONFIG.ADMIN_NUMBER) {
-                switch (cmd) {
-                    case '/help':
-                        await adminCommands.help(msg);
-                        break;
-                    case '/gencode':
-                        await adminCommands.gencode(msg, args);
-                        break;
-                    case '/stats':
-                        await adminCommands.stats(msg);
-                        break;
-                    case '/users':
-                        await adminCommands.users(msg);
-                        break;
-                    case '/groups':
-                        await adminCommands.groups(msg);
-                        break;
-                    case '/notify':
-                        await adminCommands.notify(msg, args);
-                        break;
-                    case '/backup':
-                        await adminCommands.backup(msg);
-                        break;
-                    case '/cleanup':
-                        await adminCommands.cleanup(msg);
-                        break;
-                    default:
-                        await msg.reply('❌ Commande inconnue. Tapez /help pour voir les commandes disponibles.');
-                }
-                return;
+        // Commandes Admin (toujours autorisées)
+        if (phone === CONFIG.ADMIN_NUMBER) {
+            // Ne traiter que les commandes qui commencent par /
+            if (!text.startsWith('/')) return;
+            
+            switch (cmd) {
+                case '/help':
+                    await adminCommands.help(msg);
+                    break;
+                case '/gencode':
+                    await adminCommands.gencode(msg, args);
+                    break;
+                case '/stats':
+                    await adminCommands.stats(msg);
+                    break;
+                case '/users':
+                    await adminCommands.users(msg);
+                    break;
+                case '/groups':
+                    await adminCommands.groups(msg);
+                    break;
+                case '/notify':
+                    await adminCommands.notify(msg, args);
+                    break;
+                case '/backup':
+                    await adminCommands.backup(msg);
+                    break;
+                case '/cleanup':
+                    await adminCommands.cleanup(msg);
+                    break;
+                default:
+                    await msg.reply('❌ Commande inconnue. Tapez /help pour voir les commandes disponibles.');
             }
+            return;
+        }
 
-            // Activation (pour tous les utilisateurs)
-            if (cmd === '/activate') {
+        // Pour tous les autres utilisateurs, vérifier s'ils sont autorisés
+        const isAuthorized = await db.isAuthorized(phone);
+        
+        // Si l'utilisateur n'est pas autorisé et écrit quelque chose (commande ou message normal)
+        if (!isAuthorized) {
+            // Permettre uniquement la commande /activate
+            if (text.startsWith('/activate')) {
                 if (!args.length) return msg.reply('❌ Usage: /activate XXXX-XXXX');
                 const code = args[0];
                 if (await db.validateCode(phone, code)) {
@@ -734,36 +743,41 @@ async function initClient() {
                 }
                 return;
             }
-
-            // Vérifier l'autorisation pour les autres commandes
-            if (!(await db.isAuthorized(phone))) {
-                return msg.reply(`🔒 *ACCÈS REQUIS*\n\nVous devez activer votre compte avec un code.\n\n📞 Contactez l'admin: ${CONFIG.ADMIN_NUMBER.replace('@c.us', '')}\n💡 Commande: /activate XXXX-XXXX`);
-            }
-
-            // Commandes utilisateur autorisé
-            switch (cmd) {
-                case '/help':
-                    await userCommands.help(msg);
-                    break;
-                case '/status':
-                    await userCommands.status(msg, phone);
-                    break;
-                case '/addgroup':
-                    await userCommands.addgroup(msg, phone);
-                    break;
-                case '/broadcast':
-                    await userCommands.broadcast(msg, phone, args);
-                    break;
-                default:
-                    await msg.reply('❌ Commande inconnue. Tapez /help pour voir les commandes disponibles.');
-            }
-
-        } catch (error) {
-            console.error('❌ Erreur traitement message:', error.message);
-            await msg.reply('❌ Une erreur s\'est produite. Veuillez réessayer.');
+            
+            // Pour tout autre message (commande ou texte normal), demander l'activation
+            await msg.reply(`🔒 *ACCÈS REQUIS*\n\nVous devez activer votre compte avec un code.\n\n📞 Contactez l'admin: ${CONFIG.ADMIN_NUMBER.replace('@c.us', '')}\n💡 Commande: /activate XXXX-XXXX`);
+            return;
         }
-    });
 
+        // Utilisateur autorisé - traiter uniquement les commandes
+        if (!text.startsWith('/')) return;
+
+        // Commandes utilisateur autorisé
+        switch (cmd) {
+            case '/help':
+                await userCommands.help(msg);
+                break;
+            case '/status':
+                await userCommands.status(msg, phone);
+                break;
+            case '/addgroup':
+                await userCommands.addgroup(msg, phone);
+                break;
+            case '/broadcast':
+                await userCommands.broadcast(msg, phone, args);
+                break;
+            case '/activate':
+                await msg.reply('✅ Votre compte est déjà activé! Tapez /help pour voir les commandes disponibles.');
+                break;
+            default:
+                await msg.reply('❌ Commande inconnue. Tapez /help pour voir les commandes disponibles.');
+        }
+
+    } catch (error) {
+        console.error('❌ Erreur traitement message:', error.message);
+        await msg.reply('❌ Une erreur s\'est produite. Veuillez réessayer.');
+    }
+});
     await state.client.initialize();
 }
 
