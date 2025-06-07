@@ -21,6 +21,611 @@ const state = {
     reconnects: 0, maxReconnects: 3
 };
 
+// ===================== SYSTÈME DE GESTION DE GROUPES =====================
+// À ajouter après la ligne 'const state = {...}' dans votre code principal
+
+// Extension de l'état global pour la gestion des groupes
+Object.assign(state, {
+    groupSettings: new Map(), // Configuration par groupe
+    gameStats: new Map(),     // Statistiques de jeu par utilisateur
+    activeGames: new Map(),   // Jeux en cours
+    monthlyRanking: new Map() // Classement mensuel
+});
+
+// Extension des fichiers de configuration
+Object.assign(CONFIG.FILES, {
+    GROUP_SETTINGS: 'group_settings.json',
+    GAME_STATS: 'game_stats.json',
+    MONTHLY_RANKING: 'monthly_ranking.json'
+});
+
+// Configuration des jeux et récompenses
+const GAME_CONFIG = {
+    QUIZ_POINTS: 10,
+    CALC_POINTS: 15,
+    LOTO_POINTS: 5,
+    USAGE_POINTS: 2,
+    MONTHLY_PRIZES: {
+        1: { amount: 1500, phone: '237651104356' }, // Numéro pour récupérer les gains
+        2: { amount: 1000, phone: '237651104356' },
+        3: { amount: 500, phone: '237651104356' }
+    },
+    GAME_TIMEOUT: 30000 // 30 secondes pour répondre
+};
+
+// ===================== GESTION DES DONNÉES =====================
+
+// Extension du système de cache
+async function loadGroupCache() {
+    try {
+        const [groupSettings, gameStats, monthlyRanking] = await Promise.all([
+            loadFromDrive('GROUP_SETTINGS'),
+            loadFromDrive('GAME_STATS'),
+            loadFromDrive('MONTHLY_RANKING')
+        ]);
+
+        state.groupSettings = new Map(Object.entries(groupSettings));
+        state.gameStats = new Map(Object.entries(gameStats));
+        state.monthlyRanking = new Map(Object.entries(monthlyRanking));
+
+        console.log(`🎮 Cache groupes chargé: ${state.groupSettings.size} groupes, ${state.gameStats.size} joueurs`);
+    } catch (error) {
+        console.error('❌ Erreur chargement cache groupes:', error.message);
+    }
+}
+
+async function saveGroupCache(type = 'all') {
+    try {
+        const saves = [];
+        if (type === 'all' || type === 'settings') {
+            saves.push(saveToDrive('GROUP_SETTINGS', Object.fromEntries(state.groupSettings)));
+        }
+        if (type === 'all' || type === 'stats') {
+            saves.push(saveToDrive('GAME_STATS', Object.fromEntries(state.gameStats)));
+        }
+        if (type === 'all' || type === 'ranking') {
+            saves.push(saveToDrive('MONTHLY_RANKING', Object.fromEntries(state.monthlyRanking)));
+        }
+        await Promise.all(saves);
+        return true;
+    } catch (error) {
+        console.error('❌ Erreur sauvegarde cache groupes:', error.message);
+        return false;
+    }
+}
+
+// ===================== UTILITAIRES DE GROUPE =====================
+
+async function isGroupAdmin(msg, userId) {
+    try {
+        const chat = await msg.getChat();
+        if (!chat.isGroup) return false;
+        
+        const participant = chat.participants.find(p => p.id._serialized === userId);
+        return participant && participant.isAdmin;
+    } catch (error) {
+        console.error('❌ Erreur vérification admin:', error.message);
+        return false;
+    }
+}
+
+function getGroupSettings(groupId) {
+    const defaultSettings = {
+        linkProtection: true,
+        gamesEnabled: true,
+        autoDeleteLinks: true,
+        allowedAdmins: [],
+        customCommands: {}
+    };
+    return state.groupSettings.get(groupId) || defaultSettings;
+}
+
+function getUserStats(userId) {
+    const defaultStats = {
+        totalPoints: 0,
+        gamesPlayed: 0,
+        quizCorrect: 0,
+        calcCorrect: 0,
+        lotoWins: 0,
+        monthlyPoints: 0,
+        lastActivity: new Date().toISOString()
+    };
+    return state.gameStats.get(userId) || defaultStats;
+}
+
+async function addPoints(userId, points, gameType = 'usage') {
+    try {
+        const stats = getUserStats(userId);
+        stats.totalPoints += points;
+        stats.monthlyPoints += points;
+        stats.gamesPlayed += gameType !== 'usage' ? 1 : 0;
+        stats.lastActivity = new Date().toISOString();
+        
+        if (gameType === 'quiz') stats.quizCorrect++;
+        else if (gameType === 'calc') stats.calcCorrect++;
+        else if (gameType === 'loto') stats.lotoWins++;
+        
+        state.gameStats.set(userId, stats);
+        await saveGroupCache('stats');
+        return stats.totalPoints;
+    } catch (error) {
+        console.error('❌ Erreur ajout points:', error.message);
+        return 0;
+    }
+}
+
+// ===================== GÉNÉRATEURS DE JEUX =====================
+
+const gameGenerators = {
+    generateQuiz() {
+        const topics = [
+            { q: "Quelle est la capitale du Cameroun ?", a: ["yaoundé", "yaounde"], points: 10 },
+            { q: "Combien font 7 × 8 ?", a: ["56"], points: 10 },
+            { q: "En quelle année le Cameroun a-t-il eu son indépendance ?", a: ["1960"], points: 15 },
+            { q: "Quel est le plus grand océan du monde ?", a: ["pacifique"], points: 10 },
+            { q: "Combien de continents y a-t-il ?", a: ["7", "sept"], points: 10 },
+            { q: "Quelle est la monnaie du Cameroun ?", a: ["fcfa", "franc cfa"], points: 10 }
+        ];
+        return topics[Math.floor(Math.random() * topics.length)];
+    },
+
+    generateCalculation() {
+        const operations = ['+', '-', '×', '÷'];
+        const op = operations[Math.floor(Math.random() * operations.length)];
+        let a, b, result, question;
+        
+        switch (op) {
+            case '+':
+                a = Math.floor(Math.random() * 100) + 1;
+                b = Math.floor(Math.random() * 100) + 1;
+                result = a + b;
+                question = `${a} + ${b}`;
+                break;
+            case '-':
+                a = Math.floor(Math.random() * 100) + 50;
+                b = Math.floor(Math.random() * 50) + 1;
+                result = a - b;
+                question = `${a} - ${b}`;
+                break;
+            case '×':
+                a = Math.floor(Math.random() * 12) + 1;
+                b = Math.floor(Math.random() * 12) + 1;
+                result = a * b;
+                question = `${a} × ${b}`;
+                break;
+            case '÷':
+                result = Math.floor(Math.random() * 12) + 1;
+                b = Math.floor(Math.random() * 10) + 2;
+                a = result * b;
+                question = `${a} ÷ ${b}`;
+                break;
+        }
+        
+        return {
+            q: `Combien font ${question} ?`,
+            a: [result.toString()],
+            points: GAME_CONFIG.CALC_POINTS
+        };
+    },
+
+    generateLoto() {
+        const winningNumber = Math.floor(Math.random() * 100) + 1;
+        return {
+            q: `🎰 LOTO ÉCLAIR 🎰\nChoisissez un nombre entre 1 et 100!\n\n💰 Nombre gagnant proche = ${GAME_CONFIG.LOTO_POINTS} points\n🎯 Nombre exact = ${GAME_CONFIG.LOTO_POINTS * 3} points`,
+            winningNumber,
+            type: 'loto'
+        };
+    }
+};
+
+// ===================== SYSTÈME DE JEU =====================
+
+async function startGame(msg, gameType) {
+    try {
+        const chat = await msg.getChat();
+        const groupId = chat.id._serialized;
+        
+        if (state.activeGames.has(groupId)) {
+            return msg.reply('🎮 Un jeu est déjà en cours dans ce groupe!');
+        }
+
+        let game;
+        switch (gameType) {
+            case 'quiz':
+                game = gameGenerators.generateQuiz();
+                break;
+            case 'calc':
+                game = gameGenerators.generateCalculation();
+                break;
+            case 'loto':
+                game = gameGenerators.generateLoto();
+                break;
+            default:
+                return msg.reply('❌ Type de jeu invalide!');
+        }
+
+        game.type = gameType;
+        game.startTime = Date.now();
+        game.participants = new Map();
+        
+        state.activeGames.set(groupId, game);
+
+        await msg.reply(`🎮 **${gameType.toUpperCase()}** 🎮\n\n${game.q}\n\n⏰ Vous avez 30 secondes!\n💰 Récompense: ${game.points || GAME_CONFIG.LOTO_POINTS} points`);
+
+        // Timer pour fermer le jeu
+        setTimeout(async () => {
+            await endGame(groupId, chat);
+        }, GAME_CONFIG.GAME_TIMEOUT);
+
+    } catch (error) {
+        console.error('❌ Erreur démarrage jeu:', error.message);
+        await msg.reply('❌ Erreur lors du démarrage du jeu');
+    }
+}
+
+async function endGame(groupId, chat) {
+    try {
+        const game = state.activeGames.get(groupId);
+        if (!game) return;
+
+        state.activeGames.delete(groupId);
+
+        if (game.participants.size === 0) {
+            await state.client.sendMessage(groupId, '⏰ Temps écoulé! Aucune participation.');
+            return;
+        }
+
+        let resultMsg = `🏁 **JEU TERMINÉ** 🏁\n\n`;
+        
+        if (game.type === 'loto') {
+            resultMsg += `🎯 Nombre gagnant: ${game.winningNumber}\n\n`;
+            const winners = [];
+            
+            for (const [userId, guess] of game.participants) {
+                const difference = Math.abs(parseInt(guess) - game.winningNumber);
+                let points = 0;
+                
+                if (difference === 0) {
+                    points = GAME_CONFIG.LOTO_POINTS * 3;
+                    winners.push({ userId, guess, points, exact: true });
+                } else if (difference <= 5) {
+                    points = GAME_CONFIG.LOTO_POINTS;
+                    winners.push({ userId, guess, points, exact: false });
+                }
+                
+                if (points > 0) {
+                    await addPoints(userId, points, 'loto');
+                }
+            }
+            
+            if (winners.length > 0) {
+                resultMsg += '🏆 **GAGNANTS:**\n';
+                for (const winner of winners) {
+                    const contact = await state.client.getContactById(winner.userId);
+                    const name = contact.pushname || contact.number;
+                    resultMsg += `${winner.exact ? '🎯' : '🎲'} ${name}: ${winner.guess} (+${winner.points} pts)\n`;
+                }
+            } else {
+                resultMsg += '😢 Aucun gagnant cette fois!';
+            }
+        } else {
+            resultMsg += `✅ Bonne réponse: ${game.a[0]}\n\n`;
+            
+            if (game.winner) {
+                const contact = await state.client.getContactById(game.winner);
+                const name = contact.pushname || contact.number;
+                resultMsg += `🏆 Gagnant: ${name} (+${game.points} points)`;
+            } else {
+                resultMsg += '😢 Aucune bonne réponse!';
+            }
+        }
+
+        await state.client.sendMessage(groupId, resultMsg);
+    } catch (error) {
+        console.error('❌ Erreur fin de jeu:', error.message);
+    }
+}
+
+// ===================== CLASSEMENT ET RÉCOMPENSES =====================
+
+async function getMonthlyRanking(limit = 10) {
+    try {
+        const rankings = [];
+        for (const [userId, stats] of state.gameStats) {
+            if (stats.monthlyPoints > 0) {
+                rankings.push({
+                    userId,
+                    monthlyPoints: stats.monthlyPoints,
+                    totalPoints: stats.totalPoints,
+                    gamesPlayed: stats.gamesPlayed
+                });
+            }
+        }
+        
+        rankings.sort((a, b) => b.monthlyPoints - a.monthlyPoints);
+        return rankings.slice(0, limit);
+    } catch (error) {
+        console.error('❌ Erreur classement:', error.message);
+        return [];
+    }
+}
+
+async function processMonthlyRewards() {
+    try {
+        const ranking = await getMonthlyRanking(3);
+        const rewards = [];
+        
+        for (let i = 0; i < Math.min(ranking.length, 3); i++) {
+            const player = ranking[i];
+            const prize = GAME_CONFIG.MONTHLY_PRIZES[i + 1];
+            
+            if (prize && player.monthlyPoints >= 50) { // Minimum 50 points pour gagner
+                const contact = await state.client.getContactById(player.userId);
+                const name = contact.pushname || contact.number;
+                
+                rewards.push({
+                    position: i + 1,
+                    userId: player.userId,
+                    name,
+                    points: player.monthlyPoints,
+                    prize: prize.amount,
+                    contactNumber: prize.phone
+                });
+                
+                // Message privé au gagnant
+                const congratsMsg = `🎉 **FÉLICITATIONS!** 🎉\n\nVous êtes ${i === 0 ? '1er' : i === 1 ? '2ème' : '3ème'} du classement mensuel!\n\n💰 Gain: ${prize.amount}F\n📞 Contactez: ${prize.phone}\n🏆 Points ce mois: ${player.monthlyPoints}`;
+                
+                await state.client.sendMessage(player.userId, congratsMsg);
+            }
+        }
+        
+        // Reset des points mensuels
+        for (const [userId, stats] of state.gameStats) {
+            stats.monthlyPoints = 0;
+            state.gameStats.set(userId, stats);
+        }
+        
+        await saveGroupCache('stats');
+        return rewards;
+    } catch (error) {
+        console.error('❌ Erreur traitement récompenses:', error.message);
+        return [];
+    }
+}
+
+// ===================== COMMANDES DE GROUPE =====================
+
+const groupCommands = {
+    async gameQuiz(msg) {
+        await startGame(msg, 'quiz');
+    },
+
+    async gameCalc(msg) {
+        await startGame(msg, 'calc');
+    },
+
+    async gameLoto(msg) {
+        await startGame(msg, 'loto');
+    },
+
+    async ranking(msg) {
+        try {
+            const ranking = await getMonthlyRanking(10);
+            if (ranking.length === 0) {
+                return msg.reply('📊 Aucun joueur ce mois-ci!');
+            }
+
+            let response = `🏆 **CLASSEMENT MENSUEL** 🏆\n\n`;
+            
+            for (let i = 0; i < ranking.length; i++) {
+                const player = ranking[i];
+                try {
+                    const contact = await state.client.getContactById(player.userId);
+                    const name = contact.pushname || contact.number;
+                    const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`;
+                    response += `${medal} ${name}\n💰 ${player.monthlyPoints} pts | 🎮 ${player.gamesPlayed} jeux\n\n`;
+                } catch (e) {
+                    console.error('Erreur contact classement:', e.message);
+                }
+            }
+            
+            response += `💰 Récompenses fin de mois:\n🥇 1500F | 🥈 1000F | 🥉 500F`;
+            await msg.reply(response);
+        } catch (error) {
+            console.error('❌ Erreur affichage classement:', error.message);
+            await msg.reply('❌ Erreur lors de l\'affichage du classement');
+        }
+    },
+
+    async myStats(msg) {
+        try {
+            const contact = await msg.getContact();
+            const stats = getUserStats(contact.id._serialized);
+            
+            const response = `📊 **VOS STATISTIQUES** 📊\n\n💰 Points total: ${stats.totalPoints}\n🗓️ Points ce mois: ${stats.monthlyPoints}\n🎮 Jeux joués: ${stats.gamesPlayed}\n\n🧠 Quiz réussis: ${stats.quizCorrect}\n🔢 Calculs réussis: ${stats.calcCorrect}\n🎰 Loto gagnés: ${stats.lotoWins}`;
+            
+            await msg.reply(response);
+        } catch (error) {
+            console.error('❌ Erreur stats utilisateur:', error.message);
+            await msg.reply('❌ Erreur lors de l\'affichage des statistiques');
+        }
+    },
+
+    async groupConfig(msg, args, isAdmin) {
+        if (!isAdmin) return msg.reply('❌ Seuls les administrateurs peuvent configurer le groupe');
+        
+        const chat = await msg.getChat();
+        const groupId = chat.id._serialized;
+        const settings = getGroupSettings(groupId);
+        
+        if (!args.length) {
+            const status = `⚙️ **CONFIGURATION GROUPE** ⚙️\n\n🔗 Protection liens: ${settings.linkProtection ? '✅' : '❌'}\n🎮 Jeux activés: ${settings.gamesEnabled ? '✅' : '❌'}\n🗑️ Suppression auto: ${settings.autoDeleteLinks ? '✅' : '❌'}`;
+            return msg.reply(status);
+        }
+        
+        const [setting, value] = args;
+        switch (setting.toLowerCase()) {
+            case 'liens':
+                settings.linkProtection = value === 'on';
+                break;
+            case 'jeux':
+                settings.gamesEnabled = value === 'on';
+                break;
+            case 'autodel':
+                settings.autoDeleteLinks = value === 'on';
+                break;
+            default:
+                return msg.reply('❌ Options: liens, jeux, autodel\nUsage: /config liens on/off');
+        }
+        
+        state.groupSettings.set(groupId, settings);
+        await saveGroupCache('settings');
+        await msg.reply(`✅ ${setting} ${value === 'on' ? 'activé' : 'désactivé'}`);
+    }
+};
+
+// ===================== SYSTÈME DE PROTECTION DES LIENS =====================
+
+async function handleLinkProtection(msg) {
+    try {
+        const chat = await msg.getChat();
+        if (!chat.isGroup) return false;
+        
+        const groupId = chat.id._serialized;
+        const settings = getGroupSettings(groupId);
+        
+        if (!settings.linkProtection) return false;
+        
+        const hasLink = /https?:\/\/|www\.|\.com|\.net|\.org|t\.me|wa\.me/i.test(msg.body);
+        if (!hasLink) return false;
+        
+        const contact = await msg.getContact();
+        const isAdmin = await isGroupAdmin(msg, contact.id._serialized);
+        const isBotAdmin = contact.id._serialized === CONFIG.ADMIN_NUMBER;
+        
+        if (isAdmin || isBotAdmin) return false;
+        
+        if (settings.autoDeleteLinks) {
+            await msg.delete(true);
+            const warning = `🚫 @${contact.id.user}, les liens sont interdits dans ce groupe!`;
+            const sentMsg = await msg.reply(warning, null, { mentions: [contact] });
+            
+            setTimeout(async () => {
+                try {
+                    await sentMsg.delete(true);
+                } catch (e) {
+                    console.error('Erreur suppression message warning:', e.message);
+                }
+            }, 10000);
+        }
+        
+        return true;
+    } catch (error) {
+        console.error('❌ Erreur protection liens:', error.message);
+        return false;
+    }
+}
+
+// ===================== GESTION DES RÉPONSES DE JEU =====================
+
+async function handleGameResponse(msg) {
+    try {
+        const chat = await msg.getChat();
+        if (!chat.isGroup) return false;
+        
+        const groupId = chat.id._serialized;
+        const game = state.activeGames.get(groupId);
+        
+        if (!game || msg.body.startsWith('/')) return false;
+        
+        const contact = await msg.getContact();
+        const userId = contact.id._serialized;
+        const userInput = msg.body.trim().toLowerCase();
+        
+        if (game.type === 'loto') {
+            const guess = parseInt(msg.body.trim());
+            if (isNaN(guess) || guess < 1 || guess > 100) return false;
+            
+            game.participants.set(userId, guess);
+            return true;
+        } else {
+            // Quiz ou Calcul
+            const isCorrect = game.a.some(answer => 
+                userInput === answer.toLowerCase() || 
+                userInput.includes(answer.toLowerCase())
+            );
+            
+            if (isCorrect && !game.winner) {
+                game.winner = userId;
+                await addPoints(userId, game.points, game.type);
+                
+                const name = contact.pushname || contact.number;
+                await msg.reply(`🎉 Bravo ${name}! Bonne réponse! (+${game.points} points)`);
+                
+                setTimeout(async () => {
+                    await endGame(groupId, chat);
+                }, 2000);
+                
+                return true;
+            }
+        }
+        
+        return false;
+    } catch (error) {
+        console.error('❌ Erreur gestion réponse jeu:', error.message);
+        return false;
+    }
+}
+
+// ===================== TÂCHE MENSUELLE =====================
+
+// Fonction à appeler le 1er de chaque mois
+async function monthlyRewardTask() {
+    try {
+        console.log('🏆 Traitement des récompenses mensuelles...');
+        const rewards = await processMonthlyRewards();
+        
+        if (rewards.length > 0) {
+            // Notifier l'admin
+            let adminMsg = `🏆 **RÉCOMPENSES MENSUELLES** 🏆\n\n`;
+            rewards.forEach(reward => {
+                adminMsg += `${reward.position === 1 ? '🥇' : reward.position === 2 ? '🥈' : '🥉'} ${reward.name}\n💰 ${reward.prize}F à distribuer\n📞 ${reward.contactNumber}\n\n`;
+            });
+            
+            await state.client.sendMessage(CONFIG.ADMIN_NUMBER, adminMsg);
+        }
+        
+        console.log(`🎉 ${rewards.length} récompenses distribuées`);
+    } catch (error) {
+        console.error('❌ Erreur tâche mensuelle:', error.message);
+    }
+}
+
+// Planifier la tâche mensuelle (1er de chaque mois à minuit)
+function scheduleMonthlyTask() {
+    const now = new Date();
+    const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1, 0, 0, 0);
+    const timeUntilNextMonth = nextMonth.getTime() - now.getTime();
+    
+    setTimeout(() => {
+        monthlyRewardTask();
+        setInterval(monthlyRewardTask, 30 * 24 * 60 * 60 * 1000); // Répéter chaque mois
+    }, timeUntilNextMonth);
+}
+
+// ===================== EXPORTS =====================
+module.exports = {
+    groupCommands,
+    loadGroupCache,
+    saveGroupCache,
+    handleLinkProtection,
+    handleGameResponse,
+    addPoints,
+    isGroupAdmin,
+    scheduleMonthlyTask,
+    monthlyRewardTask
+};
+
 // Store Google Drive pour RemoteAuth
 class DriveStore {
     constructor() {
@@ -135,6 +740,7 @@ async function initDriveFiles() {
         }
     }
     await loadCache();
+    await loadGroupCache(); // Ajouter cette ligne
 }
 
 async function loadFromDrive(fileKey) {
@@ -512,24 +1118,37 @@ const adminCommands = {
 // Commandes Utilisateur
 const userCommands = {
     async help(msg) {
-        const helpText = `🤖 *COMMANDES UTILISATEUR*
+    const helpText = `🤖 *COMMANDES UTILISATEUR*
 
 *📋 INFORMATIONS*
-• /status - Voir votre statut
-• /help - Afficher cette aide
+- /status - Voir votre statut
+- /messtats - Vos statistiques de jeu
+- /help - Afficher cette aide
 
 *📢 DIFFUSION*
-• /broadcast [message] - Diffuser dans vos groupes
-• /addgroup - Ajouter ce groupe à votre liste
+- /broadcast [message] - Diffuser dans vos groupes
+- /addgroup - Ajouter ce groupe à votre liste
 
-*ℹ️ EXEMPLE*
-/broadcast Bonjour tout le monde!
+*🎮 JEUX (dans les groupes)*
+- /quiz - Quiz culture générale
+- /calcul - Calcul mathématique
+- /loto - Loto éclair (1-100)
+- /classement - Top joueurs du mois
+
+*⚙️ GROUPE (admins uniquement)*
+- /config - Voir/modifier config groupe
+- /config liens on/off - Protection liens
+- /config jeux on/off - Activer/désactiver jeux
+- /config autodel on/off - Suppression auto liens
+
+*🏆 RÉCOMPENSES MENSUELLES*
+🥇 1er: 1500F | 🥈 2ème: 1000F | 🥉 3ème: 500F
 
 *📞 SUPPORT*
 Contact admin: ${CONFIG.ADMIN_NUMBER.replace('@c.us', '')}`;
 
-        await msg.reply(helpText);
-    },
+    await msg.reply(helpText);
+},
 
     async status(msg, phone) {
         const userData = state.cache.users.get(phone);
@@ -680,6 +1299,11 @@ async function initClient() {
 
     state.client.on('message', async (msg) => {
     // Ignorer les messages qui ne sont pas des commandes ou les messages système
+    // Protection contre les liens (avant tout traitement)
+if (await handleLinkProtection(msg)) return;
+
+// Gestion des réponses de jeu (avant tout traitement)
+if (await handleGameResponse(msg)) return;
     if (!state.ready || !msg.body || msg.fromMe) return;
     
     try {
@@ -721,6 +1345,29 @@ async function initClient() {
                 case '/cleanup':
                     await adminCommands.cleanup(msg);
                     break;
+                    // Dans le switch des commandes utilisateur, ajoutez :
+case '/quiz':
+    await groupCommands.gameQuiz(msg);
+    await addPoints(phone, GAME_CONFIG.USAGE_POINTS); // Points pour utilisation
+    break;
+case '/calcul':
+    await groupCommands.gameCalc(msg);
+    await addPoints(phone, GAME_CONFIG.USAGE_POINTS);
+    break;
+case '/loto':
+    await groupCommands.gameLoto(msg);
+    await addPoints(phone, GAME_CONFIG.USAGE_POINTS);
+    break;
+case '/classement':
+    await groupCommands.ranking(msg);
+    break;
+case '/messtats':
+    await groupCommands.myStats(msg);
+    break;
+case '/config':
+    const isAdmin = await isGroupAdmin(msg, phone) || phone === CONFIG.ADMIN_NUMBER;
+    await groupCommands.groupConfig(msg, args, isAdmin);
+    break;
                 default:
                     await msg.reply('❌ Commande inconnue. Tapez /help pour voir les commandes disponibles.');
             }
@@ -863,6 +1510,8 @@ async function start() {
     // Initialiser le client WhatsApp
     console.log('📱 Initialisation du client WhatsApp...');
     await initClient();
+    // Planifier les récompenses mensuelles
+scheduleMonthlyTask();
 }
 
 // Point d'entrée si le fichier est exécuté directement
@@ -883,628 +1532,3 @@ module.exports = {
     adminCommands, 
     userCommands 
 };
-
-// === SYSTÈME DE GESTION DE GROUPES AVANCÉ ===
-// À ajouter dans votre bot WhatsApp existant
-
-// Configuration pour les nouveaux modules
-const GROUP_CONFIG = {
-    LINK_PATTERNS: [/https?:\/\/[^\s]+/, /www\.[^\s]+/, /t\.me\/[^\s]+/, /chat\.whatsapp\.com\/[^\s]+/],
-    GAMES: {
-        QUIZ: { POINTS: 10, TIME_LIMIT: 30000 },
-        MATH: { POINTS: 5, TIME_LIMIT: 20000 },
-        LOTO: { POINTS: 15, COST: 2, MAX_NUMBER: 50 }
-    },
-    MONTHLY_PRIZES: [
-        { position: 1, amount: 1500, emoji: "🥇" },
-        { position: 2, amount: 1000, emoji: "🥈" },
-        { position: 3, amount: 500, emoji: "🥉" }
-    ],
-    PRIZE_CONTACT: "237651104356",
-    POINT_REWARDS: { MESSAGE_USE: 1, GAME_PARTICIPATION: 2, DAILY_BONUS: 5 }
-};
-
-// État étendu pour les groupes
-const groupState = {
-    activeGames: new Map(),
-    gameQuestions: new Map(),
-    leaderboards: new Map(),
-    monthlyWinners: new Map()
-};
-
-// Base de données étendue pour les groupes
-const groupDB = {
-    async getGroupSettings(groupId) {
-        if (!state.cache.groups.has(groupId)) {
-            const defaultSettings = {
-                groupId, name: "Groupe", settings: {
-                    antiLink: false, welcomeMsg: true, gameMode: true,
-                    autoDelete: false, adminOnly: false
-                },
-                moderators: [], createdAt: new Date().toISOString()
-            };
-            state.cache.groups.set(groupId, defaultSettings);
-            await saveCache('groups');
-        }
-        return state.cache.groups.get(groupId);
-    },
-
-    async updateGroupSettings(groupId, newSettings) {
-        const group = await this.getGroupSettings(groupId);
-        group.settings = { ...group.settings, ...newSettings };
-        group.updatedAt = new Date().toISOString();
-        state.cache.groups.set(groupId, group);
-        await saveCache('groups');
-        return group;
-    },
-
-    async getUserStats(phone, groupId = null) {
-        const key = `${phone}${groupId ? `_${groupId}` : ''}`;
-        if (!state.cache.users.has(key)) {
-            const stats = {
-                phone, groupId, points: 0, gamesPlayed: 0, gamesWon: 0,
-                level: 1, lastActive: new Date().toISOString(),
-                dailyStreak: 0, lastDaily: null, achievements: []
-            };
-            state.cache.users.set(key, stats);
-        }
-        return state.cache.users.get(key);
-    },
-
-    async updateUserStats(phone, groupId, updates) {
-        const key = `${phone}${groupId ? `_${groupId}` : ''}`;
-        const stats = await this.getUserStats(phone, groupId);
-        Object.assign(stats, updates, { lastActive: new Date().toISOString() });
-        
-        // Calcul automatique du niveau
-        const newLevel = Math.floor(stats.points / 100) + 1;
-        if (newLevel > stats.level) {
-            stats.level = newLevel;
-            stats.achievements.push(`Niveau ${newLevel} atteint!`);
-        }
-        
-        state.cache.users.set(key, stats);
-        await saveCache('users');
-        return stats;
-    },
-
-    async getTopPlayers(groupId = null, limit = 10) {
-        const players = [];
-        const suffix = groupId ? `_${groupId}` : '';
-        
-        for (const [key, user] of state.cache.users) {
-            if (key.endsWith(suffix) && user.points > 0) {
-                players.push({
-                    phone: user.phone.replace('@c.us', ''),
-                    points: user.points,
-                    level: user.level,
-                    gamesWon: user.gamesWon || 0,
-                    winRate: user.gamesPlayed ? ((user.gamesWon || 0) / user.gamesPlayed * 100).toFixed(1) : 0
-                });
-            }
-        }
-        
-        return players.sort((a, b) => b.points - a.points).slice(0, limit);
-    }
-};
-
-// Modérateur de liens
-const linkModerator = {
-    async checkMessage(msg, groupSettings) {
-        if (!groupSettings.settings.antiLink) return false;
-        
-        const hasLink = GROUP_CONFIG.LINK_PATTERNS.some(pattern => pattern.test(msg.body));
-        if (!hasLink) return false;
-        
-        const chat = await msg.getChat();
-        const contact = await msg.getContact();
-        const isAdmin = await this.isGroupAdmin(chat, contact.id._serialized);
-        const isBotAdmin = contact.id._serialized === CONFIG.ADMIN_NUMBER;
-        const isModerator = groupSettings.moderators.includes(contact.id._serialized);
-        
-        if (isAdmin || isBotAdmin || isModerator) return false;
-        
-        try {
-            await msg.delete(true);
-            const warning = await msg.reply(`⚠️ @${contact.number} Les liens ne sont pas autorisés dans ce groupe!`);
-            setTimeout(() => warning.delete().catch(() => {}), 10000);
-            return true;
-        } catch (error) {
-            console.error('Erreur suppression lien:', error.message);
-            return false;
-        }
-    },
-
-    async isGroupAdmin(chat, userId) {
-        try {
-            const participant = chat.participants.find(p => p.id._serialized === userId);
-            return participant && participant.isAdmin;
-        } catch {
-            return false;
-        }
-    }
-};
-
-// Générateur de jeux IA
-const gameEngine = {
-    generateQuiz() {
-        const topics = [
-            { q: "Quelle est la capitale du Cameroun?", a: ["Yaoundé", "douala", "yaounde"], cat: "Géographie" },
-            { q: "Combien font 15 × 8?", a: ["120"], cat: "Mathématiques" },
-            { q: "En quelle année le Cameroun a-t-il obtenu son indépendance?", a: ["1960"], cat: "Histoire" },
-            { q: "Quel est le plus grand océan du monde?", a: ["Pacifique", "océan pacifique"], cat: "Géographie" },
-            { q: "Qui a écrit 'Le Vieux Nègre et la Médaille'?", a: ["Ferdinand Oyono", "oyono"], cat: "Littérature" },
-            { q: "Combien de régions compte le Cameroun?", a: ["10", "dix"], cat: "Géographie" },
-            { q: "Quelle est la monnaie du Cameroun?", a: ["CFA", "FCFA", "Franc CFA"], cat: "Économie" },
-            { q: "Quel fleuve traverse Douala?", a: ["Wouri"], cat: "Géographie" }
-        ];
-        return topics[Math.floor(Math.random() * topics.length)];
-    },
-
-    generateMath() {
-        const operations = ['+', '-', '×', '÷'];
-        const op = operations[Math.floor(Math.random() * operations.length)];
-        let a, b, answer, question;
-        
-        switch(op) {
-            case '+':
-                a = Math.floor(Math.random() * 100) + 1;
-                b = Math.floor(Math.random() * 100) + 1;
-                answer = a + b;
-                question = `${a} + ${b}`;
-                break;
-            case '-':
-                a = Math.floor(Math.random() * 100) + 50;
-                b = Math.floor(Math.random() * 50) + 1;
-                answer = a - b;
-                question = `${a} - ${b}`;
-                break;
-            case '×':
-                a = Math.floor(Math.random() * 15) + 1;
-                b = Math.floor(Math.random() * 15) + 1;
-                answer = a * b;
-                question = `${a} × ${b}`;
-                break;
-            case '÷':
-                answer = Math.floor(Math.random() * 20) + 1;
-                b = Math.floor(Math.random() * 10) + 2;
-                a = answer * b;
-                question = `${a} ÷ ${b}`;
-                break;
-        }
-        
-        return { question, answer: answer.toString(), category: "Calcul" };
-    },
-
-    generateLoto() {
-        const winningNumbers = [];
-        while (winningNumbers.length < 5) {
-            const num = Math.floor(Math.random() * GROUP_CONFIG.GAMES.LOTO.MAX_NUMBER) + 1;
-            if (!winningNumbers.includes(num)) winningNumbers.push(num);
-        }
-        return winningNumbers.sort((a, b) => a - b);
-    },
-
-    async startGame(groupId, type, msg) {
-        if (groupState.activeGames.has(groupId)) {
-            return msg.reply("🎮 Un jeu est déjà en cours dans ce groupe!");
-        }
-
-        let gameData;
-        switch(type) {
-            case 'quiz':
-                gameData = this.generateQuiz();
-                gameData.type = 'quiz';
-                gameData.timeLimit = GROUP_CONFIG.GAMES.QUIZ.TIME_LIMIT;
-                gameData.points = GROUP_CONFIG.GAMES.QUIZ.POINTS;
-                break;
-            case 'math':
-                gameData = this.generateMath();
-                gameData.type = 'math';
-                gameData.timeLimit = GROUP_CONFIG.GAMES.MATH.TIME_LIMIT;
-                gameData.points = GROUP_CONFIG.GAMES.MATH.POINTS;
-                break;
-            case 'loto':
-                gameData = {
-                    type: 'loto',
-                    winningNumbers: this.generateLoto(),
-                    participants: new Map(),
-                    timeLimit: 60000,
-                    points: GROUP_CONFIG.GAMES.LOTO.POINTS
-                };
-                break;
-        }
-
-        gameData.startTime = Date.now();
-        gameData.groupId = groupId;
-        gameData.participants = gameData.participants || new Set();
-        
-        groupState.activeGames.set(groupId, gameData);
-        
-        // Message de lancement
-        let gameMsg;
-        if (type === 'loto') {
-            gameMsg = `🎰 *JEU DE LOTO* 🎰\n\nChoisissez 5 numéros entre 1 et ${GROUP_CONFIG.GAMES.LOTO.MAX_NUMBER}\nFormat: /loto 5 12 23 31 45\nCoût: ${GROUP_CONFIG.GAMES.LOTO.COST} points\nGain: ${gameData.points} points\n⏰ 60 secondes!`;
-        } else {
-            gameMsg = `🧠 *${type.toUpperCase()}* - ${gameData.category}\n\n❓ ${gameData.question}\n\n💎 Points: ${gameData.points}\n⏰ ${gameData.timeLimit/1000}s pour répondre!\n\nTapez votre réponse!`;
-        }
-        
-        await msg.reply(gameMsg);
-        
-        // Timer automatique
-        setTimeout(() => this.endGame(groupId, msg), gameData.timeLimit);
-    },
-
-    async handleAnswer(msg, groupId) {
-        const game = groupState.activeGames.get(groupId);
-        if (!game) return;
-
-        const contact = await msg.getContact();
-        const phone = contact.id._serialized;
-        const answer = msg.body.trim().toLowerCase();
-
-        if (game.type === 'loto') {
-            if (!msg.body.startsWith('/loto')) return;
-            
-            const numbers = msg.body.split(' ').slice(1).map(n => parseInt(n)).filter(n => n >= 1 && n <= GROUP_CONFIG.GAMES.LOTO.MAX_NUMBER);
-            if (numbers.length !== 5) {
-                return msg.reply("❌ Veuillez choisir exactement 5 numéros valides!");
-            }
-
-            const userStats = await groupDB.getUserStats(phone, groupId);
-            if (userStats.points < GROUP_CONFIG.GAMES.LOTO.COST) {
-                return msg.reply(`❌ Points insuffisants! (${GROUP_CONFIG.GAMES.LOTO.COST} requis)`);
-            }
-
-            game.participants.set(phone, { numbers, name: contact.pushname || contact.number });
-            await groupDB.updateUserStats(phone, groupId, { 
-                points: userStats.points - GROUP_CONFIG.GAMES.LOTO.COST,
-                gamesPlayed: (userStats.gamesPlayed || 0) + 1
-            });
-
-            await msg.reply(`✅ Participation enregistrée: ${numbers.join(', ')}`);
-            return;
-        }
-
-        // Quiz et Math
-        const correctAnswers = Array.isArray(game.answer) ? game.answer : [game.answer];
-        const isCorrect = correctAnswers.some(correct => correct.toLowerCase() === answer);
-
-        if (isCorrect && !game.participants.has(phone)) {
-            game.participants.add(phone);
-            game.winner = { phone, name: contact.pushname || contact.number };
-            
-            await groupDB.updateUserStats(phone, groupId, { 
-                points: (await groupDB.getUserStats(phone, groupId)).points + game.points,
-                gamesPlayed: ((await groupDB.getUserStats(phone, groupId)).gamesPlayed || 0) + 1,
-                gamesWon: ((await groupDB.getUserStats(phone, groupId)).gamesWon || 0) + 1
-            });
-
-            await msg.reply(`🎉 *BRAVO ${game.winner.name}!*\n✅ Réponse correcte!\n💎 +${game.points} points`);
-            this.endGame(groupId, msg);
-        }
-    },
-
-    async endGame(groupId, msg) {
-        const game = groupState.activeGames.get(groupId);
-        if (!game) return;
-
-        groupState.activeGames.delete(groupId);
-
-        if (game.type === 'loto') {
-            const winners = [];
-            for (const [phone, data] of game.participants) {
-                const matches = data.numbers.filter(n => game.winningNumbers.includes(n)).length;
-                if (matches >= 3) {
-                    const prize = matches === 5 ? game.points * 2 : matches === 4 ? game.points : Math.floor(game.points / 2);
-                    winners.push({ ...data, phone, matches, prize });
-                    
-                    await groupDB.updateUserStats(phone, groupId, { 
-                        points: (await groupDB.getUserStats(phone, groupId)).points + prize,
-                        gamesWon: ((await groupDB.getUserStats(phone, groupId)).gamesWon || 0) + 1
-                    });
-                }
-            }
-
-            let resultMsg = `🎰 *RÉSULTATS LOTO* 🎰\n\n🎯 Numéros gagnants: ${game.winningNumbers.join(', ')}\n👥 ${game.participants.size} participant(s)\n\n`;
-            
-            if (winners.length > 0) {
-                resultMsg += "🏆 *GAGNANTS:*\n";
-                winners.forEach(w => {
-                    resultMsg += `• ${w.name}: ${w.matches}/5 = ${w.prize} pts\n`;
-                });
-            } else {
-                resultMsg += "😢 Aucun gagnant cette fois!";
-            }
-
-            await msg.reply(resultMsg);
-        } else if (!game.winner) {
-            const correctAnswer = Array.isArray(game.answer) ? game.answer[0] : game.answer;
-            await msg.reply(`⏰ *TEMPS ÉCOULÉ!*\n\nLa réponse était: **${correctAnswer}**\nTentez votre chance au prochain jeu! 🎮`);
-        }
-    }
-};
-
-// Système de classement mensuel
-const leaderboardSystem = {
-    async checkMonthlyReset() {
-        const now = new Date();
-        const currentMonth = `${now.getFullYear()}-${now.getMonth() + 1}`;
-        
-        if (!groupState.monthlyWinners.has(currentMonth)) {
-            await this.processMonthlyWinners();
-            groupState.monthlyWinners.set(currentMonth, true);
-        }
-    },
-
-    async processMonthlyWinners() {
-        try {
-            const topPlayers = await groupDB.getTopPlayers(null, 3);
-            if (topPlayers.length === 0) return;
-
-            let winnerMsg = "🏆 *GAGNANTS DU MOIS* 🏆\n\n";
-            
-            for (let i = 0; i < topPlayers.length && i < 3; i++) {
-                const player = topPlayers[i];
-                const prize = GROUP_CONFIG.MONTHLY_PRIZES[i];
-                
-                winnerMsg += `${prize.emoji} **${i + 1}er**: ${player.phone}\n`;
-                winnerMsg += `   💎 ${player.points} points\n`;
-                winnerMsg += `   🏆 ${player.gamesWon} victoires\n`;
-                winnerMsg += `   💰 Gain: ${prize.amount} FCFA\n\n`;
-
-                // Notification privée au gagnant
-                try {
-                    await state.client.sendMessage(`${player.phone}@c.us`, 
-                        `🎉 *FÉLICITATIONS!* 🎉\n\nVous êtes ${prize.emoji} **${prize.position}${prize.position === 1 ? 'er' : 'ème'}** du classement mensuel!\n\n💰 Votre gain: **${prize.amount} FCFA**\n\n📞 Contactez ${GROUP_CONFIG.PRIZE_CONTACT} pour récupérer votre prix!\n\n🏆 Continuez à jouer pour le mois prochain!`
-                    );
-                } catch (e) {
-                    console.error(`Erreur notification gagnant ${player.phone}:`, e.message);
-                }
-            }
-
-            winnerMsg += `📞 Contact pour les gains: ${GROUP_CONFIG.PRIZE_CONTACT}`;
-
-            // Notifier l'admin
-            await state.client.sendMessage(CONFIG.ADMIN_NUMBER, winnerMsg);
-
-            // Reset des points pour le nouveau mois
-            await this.resetMonthlyPoints();
-            
-        } catch (error) {
-            console.error('Erreur traitement gagnants mensuels:', error.message);
-        }
-    },
-
-    async resetMonthlyPoints() {
-        for (const [key, user] of state.cache.users) {
-            if (user.points > 0) {
-                user.points = Math.floor(user.points * 0.1); // Garde 10% des points
-                user.gamesWon = 0;
-                user.gamesPlayed = 0;
-            }
-        }
-        await saveCache('users');
-        console.log('🔄 Points mensuels réinitialisés');
-    }
-};
-
-// Commandes de groupe étendues
-const groupCommands = {
-    async settings(msg, args) {
-        const chat = await msg.getChat();
-        if (!chat.isGroup) return msg.reply("❌ Commande réservée aux groupes!");
-
-        const contact = await msg.getContact();
-        const isAdmin = await linkModerator.isGroupAdmin(chat, contact.id._serialized);
-        const isBotAdmin = contact.id._serialized === CONFIG.ADMIN_NUMBER;
-
-        if (!isAdmin && !isBotAdmin) {
-            return msg.reply("❌ Seuls les administrateurs peuvent modifier les paramètres!");
-        }
-
-        const groupSettings = await groupDB.getGroupSettings(chat.id._serialized);
-
-        if (!args.length) {
-            const settings = groupSettings.settings;
-            return msg.reply(`🔧 *PARAMÈTRES DU GROUPE*\n\n🔗 Anti-liens: ${settings.antiLink ? '✅' : '❌'}\n👋 Message bienvenue: ${settings.welcomeMsg ? '✅' : '❌'}\n🎮 Mode jeu: ${settings.gameMode ? '✅' : '❌'}\n🗑️ Auto-suppression: ${settings.autoDelete ? '✅' : '❌'}\n👑 Admin uniquement: ${settings.adminOnly ? '✅' : '❌'}\n\n💡 Usage: /settings antilink on/off`);
-        }
-
-        const [setting, value] = args;
-        const newValue = ['on', 'true', '1', 'oui'].includes(value?.toLowerCase());
-
-        const validSettings = ['antilink', 'welcome', 'game', 'autodelete', 'adminonly'];
-        const settingKey = {
-            'antilink': 'antiLink', 'welcome': 'welcomeMsg', 'game': 'gameMode',
-            'autodelete': 'autoDelete', 'adminonly': 'adminOnly'
-        }[setting?.toLowerCase()];
-
-        if (!settingKey) {
-            return msg.reply(`❌ Paramètre invalide!\nDisponibles: ${validSettings.join(', ')}`);
-        }
-
-        await groupDB.updateGroupSettings(chat.id._serialized, { [settingKey]: newValue });
-        await msg.reply(`✅ ${setting}: ${newValue ? 'Activé' : 'Désactivé'}`);
-    },
-
-    async game(msg, args) {
-        const chat = await msg.getChat();
-        if (!chat.isGroup) return msg.reply("❌ Commande réservée aux groupes!");
-
-        const groupSettings = await groupDB.getGroupSettings(chat.id._serialized);
-        if (!groupSettings.settings.gameMode) {
-            return msg.reply("❌ Les jeux sont désactivés dans ce groupe!");
-        }
-
-        const gameType = args[0]?.toLowerCase();
-        const validGames = ['quiz', 'math', 'loto'];
-
-        if (!gameType || !validGames.includes(gameType)) {
-            return msg.reply(`🎮 *JEUX DISPONIBLES*\n\n🧠 /game quiz - Questions culture générale\n🔢 /game math - Calcul mental\n🎰 /game loto - Jeu de numéros\n\n📊 /rank - Voir le classement\n💎 /points - Voir vos points`);
-        }
-
-        await gameEngine.startGame(chat.id._serialized, gameType, msg);
-    },
-
-    async rank(msg, args) {
-        const chat = await msg.getChat();
-        const groupId = chat.isGroup ? chat.id._serialized : null;
-        const isGlobal = args[0]?.toLowerCase() === 'global';
-
-        const topPlayers = await groupDB.getTopPlayers(isGlobal ? null : groupId, 10);
-        
-        if (!topPlayers.length) {
-            return msg.reply("📊 Aucun joueur dans le classement pour le moment!");
-        }
-
-        let rankMsg = `🏆 *CLASSEMENT ${isGlobal ? 'GLOBAL' : 'DU GROUPE'}*\n\n`;
-        
-        topPlayers.forEach((player, i) => {
-            const medal = i < 3 ? ['🥇', '🥈', '🥉'][i] : `${i + 1}.`;
-            rankMsg += `${medal} ${player.phone}\n`;
-            rankMsg += `   💎 ${player.points} pts | 🏆 ${player.gamesWon} | 📊 ${player.winRate}%\n\n`;
-        });
-
-        rankMsg += `💰 Prix mensuels: ${GROUP_CONFIG.MONTHLY_PRIZES.map(p => `${p.emoji} ${p.amount}F`).join(' | ')}`;
-
-        await msg.reply(rankMsg);
-    },
-
-    async points(msg) {
-        const contact = await msg.getContact();
-        const chat = await msg.getChat();
-        const groupId = chat.isGroup ? chat.id._serialized : null;
-        
-        const stats = await groupDB.getUserStats(contact.id._serialized, groupId);
-        const dailyBonus = await this.checkDailyBonus(contact.id._serialized);
-
-        let pointsMsg = `💎 *VOS STATISTIQUES*\n\n📊 Points: ${stats.points}\n🏆 Niveau: ${stats.level}\n🎮 Jeux joués: ${stats.gamesPlayed || 0}\n✅ Victoires: ${stats.gamesWon || 0}\n📈 Ratio: ${stats.gamesPlayed ? ((stats.gamesWon || 0) / stats.gamesPlayed * 100).toFixed(1) : 0}%`;
-
-        if (dailyBonus > 0) {
-            pointsMsg += `\n\n🎁 Bonus quotidien: +${dailyBonus} pts`;
-        }
-
-        if (stats.achievements?.length > 0) {
-            pointsMsg += `\n\n🏅 Derniers succès:\n${stats.achievements.slice(-3).map(a => `• ${a}`).join('\n')}`;
-        }
-
-        await msg.reply(pointsMsg);
-    },
-
-    async checkDailyBonus(phone) {
-        const today = new Date().toDateString();
-        const stats = await groupDB.getUserStats(phone);
-        
-        if (stats.lastDaily !== today) {
-            const bonus = GROUP_CONFIG.POINT_REWARDS.DAILY_BONUS;
-            const newStreak = stats.lastDaily === new Date(Date.now() - 86400000).toDateString() ? 
-                (stats.dailyStreak || 0) + 1 : 1;
-            
-            await groupDB.updateUserStats(phone, null, {
-                points: stats.points + bonus,
-                dailyStreak: newStreak,
-                lastDaily: today
-            });
-            
-            return bonus;
-        }
-        return 0;
-    }
-};
-
-// Intégration dans le gestionnaire de messages principal
-const originalMessageHandler = state.client.on;
-
-// Hook pour intercepter les messages de groupe
-async function handleGroupMessage(msg) {
-    if (!msg.from.includes('@g.us')) return false; // Pas un groupe
-
-    const chat = await msg.getChat();
-    const contact = await msg.getContact();
-    const groupId = chat.id._serialized;
-    const phone = contact.id._serialized;
-
-    try {
-        // Charger les paramètres du groupe
-        const groupSettings = await groupDB.getGroupSettings(groupId);
-        
-        // Modération des liens
-        const linkDeleted = await linkModerator.checkMessage(msg, groupSettings);
-        if (linkDeleted) return true;
-
-        // Gestion des jeux actifs
-        if (groupState.activeGames.has(groupId)) {
-            await gameEngine.handleAnswer(msg, groupId);
-        }
-
-        // Commandes de groupe
-        if (msg.body.startsWith('/')) {
-            const [cmd, ...args] = msg.body.slice(1).split(' ');
-            
-            switch(cmd.toLowerCase()) {
-                case 'settings':
-                case 'config':
-                    await groupCommands.settings(msg, args);
-                    return true;
-                case 'game':
-                case 'jeu':
-                    await groupCommands.game(msg, args);
-                    return true;
-                case 'rank':
-                case 'classement':
-                    await groupCommands.rank(msg, args);
-                    return true;
-                case 'points':
-                case 'stats':
-                    await groupCommands.points(msg);
-                    return true;
-                case 'loto':
-                    if (groupState.activeGames.has(groupId)) {
-                        await gameEngine.handleAnswer(msg, groupId);
-                    }
-                    return true;
-            }
-        }
-
-        // Attribution de points pour activité
-        if (await db.isAuthorized(phone)) {
-            const currentStats = await groupDB.getUserStats(phone, groupId);
-            await groupDB.updateUserStats(phone, groupId, {
-                points: currentStats.points + GROUP_CONFIG.POINT_REWARDS.MESSAGE_USE
-            });
-        }
-
-        return false; // Laisser passer pour traitement normal
-        
-    } catch (error) {
-        console.error('Erreur gestion message groupe:', error.message);
-        return false;
-    }
-}
-
-// Tâches automatiques étendues
-setInterval(() => leaderboardSystem.checkMonthlyReset(), 3600000); // Check mensuel chaque heure
-setInterval(() => {
-    // Nettoyage des jeux abandonnés
-    const now = Date.now();
-    for (const [groupId, game] of groupState.activeGames) {
-        if (now - game.startTime > game.timeLimit + 30000) {
-            groupState.activeGames.delete(groupId);
-            console.log(`🧹 Jeu abandonné nettoyé: ${groupId}`);
-        }
-    }
-}, 300000); // Toutes les 5 minutes
-
-// Export des nouveaux modules
-module.exports = {
-    ...module.exports,
-    groupDB,
-    groupCommands,
-    gameEngine,
-    linkModerator,
-    leaderboardSystem,
-    handleGroupMessage,
-    GROUP_CONFIG
-};
-
-console.log('🎮 Système de gestion de groupes avancé chargé!');
