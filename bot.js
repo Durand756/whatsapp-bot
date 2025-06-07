@@ -14,7 +14,7 @@ const CONFIG = {
     FILES: { USERS: 'users.json', CODES: 'codes.json', GROUPS: 'groups.json', SESSION: 'session.json' }
 };
 
-// État global
+// État global 
 const state = {
     ready: false, qr: null, client: null, server: null, drive: null,
     fileIds: {}, cache: { users: new Map(), codes: new Map(), groups: new Map() },
