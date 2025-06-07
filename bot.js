@@ -1298,12 +1298,12 @@ async function initClient() {
     });
 
     state.client.on('message', async (msg) => {
-    // Ignorer les messages qui ne sont pas des commandes ou les messages système
     // Protection contre les liens (avant tout traitement)
-if (await handleLinkProtection(msg)) return;
+    if (await handleLinkProtection(msg)) return;
 
-// Gestion des réponses de jeu (avant tout traitement)
-if (await handleGameResponse(msg)) return;
+    // Gestion des réponses de jeu (avant tout traitement)
+    if (await handleGameResponse(msg)) return;
+    
     if (!state.ready || !msg.body || msg.fromMe) return;
     
     try {
@@ -1314,8 +1314,12 @@ if (await handleGameResponse(msg)) return;
         const text = msg.body.trim();
         const args = text.split(' ').slice(1);
         const cmd = text.split(' ')[0].toLowerCase();
+        
+        // Vérifier si c'est un groupe
+        const chat = await msg.getChat();
+        const isGroup = chat.isGroup;
 
-        // Commandes Admin (toujours autorisées)
+        // Commandes Admin (toujours autorisées partout)
         if (phone === CONFIG.ADMIN_NUMBER) {
             // Ne traiter que les commandes qui commencent par /
             if (!text.startsWith('/')) return;
@@ -1342,42 +1346,101 @@ if (await handleGameResponse(msg)) return;
                 case '/backup':
                     await adminCommands.backup(msg);
                     break;
-                case '/cleanup':
-                    await adminCommands.cleanup(msg);
+                // Commandes de jeu pour l'admin
+                case '/quiz':
+                    if (isGroup) {
+                        await groupCommands.gameQuiz(msg);
+                        await addPoints(phone, GAME_CONFIG.USAGE_POINTS);
+                    } else {
+                        await msg.reply('❌ Cette commande fonctionne uniquement dans les groupes.');
+                    }
                     break;
-                    // Dans le switch des commandes utilisateur, ajoutez :
-case '/quiz':
-    await groupCommands.gameQuiz(msg);
-    await addPoints(phone, GAME_CONFIG.USAGE_POINTS); // Points pour utilisation
-    break;
-case '/calcul':
-    await groupCommands.gameCalc(msg);
-    await addPoints(phone, GAME_CONFIG.USAGE_POINTS);
-    break;
-case '/loto':
-    await groupCommands.gameLoto(msg);
-    await addPoints(phone, GAME_CONFIG.USAGE_POINTS);
-    break;
-case '/classement':
-    await groupCommands.ranking(msg);
-    break;
-case '/messtats':
-    await groupCommands.myStats(msg);
-    break;
-case '/config':
-    const isAdmin = await isGroupAdmin(msg, phone) || phone === CONFIG.ADMIN_NUMBER;
-    await groupCommands.groupConfig(msg, args, isAdmin);
-    break;
+                case '/calcul':
+                    if (isGroup) {
+                        await groupCommands.gameCalc(msg);
+                        await addPoints(phone, GAME_CONFIG.USAGE_POINTS);
+                    } else {
+                        await msg.reply('❌ Cette commande fonctionne uniquement dans les groupes.');
+                    }
+                    break;
+                case '/loto':
+                    if (isGroup) {
+                        await groupCommands.gameLoto(msg);
+                        await addPoints(phone, GAME_CONFIG.USAGE_POINTS);
+                    } else {
+                        await msg.reply('❌ Cette commande fonctionne uniquement dans les groupes.');
+                    }
+                    break;
+                case '/classement':
+                    if (isGroup) {
+                        await groupCommands.ranking(msg);
+                    } else {
+                        await msg.reply('❌ Cette commande fonctionne uniquement dans les groupes.');
+                    }
+                    break;
+                case '/messtats':
+                    if (isGroup) {
+                        await groupCommands.myStats(msg);
+                    } else {
+                        await msg.reply('❌ Cette commande fonctionne uniquement dans les groupes.');
+                    }
+                    break;
+                case '/config':
+                    if (isGroup) {
+                        const isAdmin = await isGroupAdmin(msg, phone) || phone === CONFIG.ADMIN_NUMBER;
+                        await groupCommands.groupConfig(msg, args, isAdmin);
+                    } else {
+                        await msg.reply('❌ Cette commande fonctionne uniquement dans les groupes.');
+                    }
+                    break;
                 default:
                     await msg.reply('❌ Commande inconnue. Tapez /help pour voir les commandes disponibles.');
             }
             return;
         }
 
-        // Pour tous les autres utilisateurs, vérifier s'ils sont autorisés
+        // GESTION DES GROUPES - Pas de vérification d'activation
+        if (isGroup) {
+            // Dans les groupes, seules les commandes sont traitées, pas de demande d'activation
+            if (!text.startsWith('/')) return;
+            
+            switch (cmd) {
+                case '/help':
+                    await msg.reply(`🎮 *COMMANDES GROUPE* 🎮\n\n🧠 /quiz - Quiz culture générale\n🔢 /calcul - Calcul mental\n🎰 /loto - Loto éclair\n📊 /classement - Top joueurs\n📈 /messtats - Mes statistiques\n⚙️ /config - Configuration (admins)`);
+                    break;
+                case '/quiz':
+                    await groupCommands.gameQuiz(msg);
+                    await addPoints(phone, GAME_CONFIG.USAGE_POINTS);
+                    break;
+                case '/calcul':
+                    await groupCommands.gameCalc(msg);
+                    await addPoints(phone, GAME_CONFIG.USAGE_POINTS);
+                    break;
+                case '/loto':
+                    await groupCommands.gameLoto(msg);
+                    await addPoints(phone, GAME_CONFIG.USAGE_POINTS);
+                    break;
+                case '/classement':
+                    await groupCommands.ranking(msg);
+                    break;
+                case '/messtats':
+                    await groupCommands.myStats(msg);
+                    break;
+                case '/config':
+                    const isAdmin = await isGroupAdmin(msg, phone) || phone === CONFIG.ADMIN_NUMBER;
+                    await groupCommands.groupConfig(msg, args, isAdmin);
+                    break;
+                default:
+                    // Dans les groupes, ne pas répondre aux commandes inconnues pour éviter le spam
+                    return;
+            }
+            return;
+        }
+
+        // GESTION DES MESSAGES PRIVÉS - Vérification d'activation requise
         const isAuthorized = await db.isAuthorized(phone);
         
-        // Si l'utilisateur n'est pas autorisé et écrit quelque chose (commande ou message normal)
+        // Si l'utilisateur n'est pas autorisé en privé
         if (!isAuthorized) {
             // Permettre uniquement la commande /activate
             if (text.startsWith('/activate')) {
@@ -1391,15 +1454,15 @@ case '/config':
                 return;
             }
             
-            // Pour tout autre message (commande ou texte normal), demander l'activation
+            // Pour tout autre message en privé, demander l'activation
             await msg.reply(`🔒 *ACCÈS REQUIS*\n\nVous devez activer votre compte avec un code.\n\n📞 Contactez l'admin: ${CONFIG.ADMIN_NUMBER.replace('@c.us', '')}\n💡 Commande: /activate XXXX-XXXX`);
             return;
         }
 
-        // Utilisateur autorisé - traiter uniquement les commandes
+        // Utilisateur autorisé en privé - traiter uniquement les commandes
         if (!text.startsWith('/')) return;
 
-        // Commandes utilisateur autorisé
+        // Commandes utilisateur autorisé en privé
         switch (cmd) {
             case '/help':
                 await userCommands.help(msg);
@@ -1415,6 +1478,53 @@ case '/config':
                 break;
             case '/activate':
                 await msg.reply('✅ Votre compte est déjà activé! Tapez /help pour voir les commandes disponibles.');
+                break;
+            // Commandes de jeu aussi disponibles en privé pour les comptes activés
+            case '/quiz':
+                if (isGroup) {
+                    await groupCommands.gameQuiz(msg);
+                    await addPoints(phone, GAME_CONFIG.USAGE_POINTS);
+                } else {
+                    await msg.reply('❌ Cette commande fonctionne uniquement dans les groupes.');
+                }
+                break;
+            case '/calcul':
+                if (isGroup) {
+                    await groupCommands.gameCalc(msg);
+                    await addPoints(phone, GAME_CONFIG.USAGE_POINTS);
+                } else {
+                    await msg.reply('❌ Cette commande fonctionne uniquement dans les groupes.');
+                }
+                break;
+            case '/loto':
+                if (isGroup) {
+                    await groupCommands.gameLoto(msg);
+                    await addPoints(phone, GAME_CONFIG.USAGE_POINTS);
+                } else {
+                    await msg.reply('❌ Cette commande fonctionne uniquement dans les groupes.');
+                }
+                break;
+            case '/classement':
+                if (isGroup) {
+                    await groupCommands.ranking(msg);
+                } else {
+                    await msg.reply('❌ Cette commande fonctionne uniquement dans les groupes.');
+                }
+                break;
+            case '/messtats':
+                if (isGroup) {
+                    await groupCommands.myStats(msg);
+                } else {
+                    await msg.reply('❌ Cette commande fonctionne uniquement dans les groupes.');
+                }
+                break;
+            case '/config':
+                if (isGroup) {
+                    const isAdmin = await isGroupAdmin(msg, phone) || phone === CONFIG.ADMIN_NUMBER;
+                    await groupCommands.groupConfig(msg, args, isAdmin);
+                } else {
+                    await msg.reply('❌ Cette commande fonctionne uniquement dans les groupes.');
+                }
                 break;
             default:
                 await msg.reply('❌ Commande inconnue. Tapez /help pour voir les commandes disponibles.');
