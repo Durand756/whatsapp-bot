@@ -24,20 +24,25 @@ const state = {
     }
 };
 
-// Jeux et Quiz
+// Jeux et Quiz améliorés
 const games = {
     quizzes: [
-        { q: "Capitale du Cameroun?", a: ["yaoundé", "yaounde"], points: 10 },
-        { q: "2+2×3=?", a: ["8"], points: 8 },
-        { q: "Plus grand océan?", a: ["pacifique"], points: 12 },
-        { q: "Planète rouge?", a: ["mars"], points: 8 },
-        { q: "Inventeur de l'ampoule?", a: ["edison"], points: 15 }
+        { q: "🏛️ Quelle est la capitale du Cameroun?", a: ["yaoundé", "yaounde"], points: 10, emoji: "🇨🇲" },
+        { q: "🧮 Combien fait 2+2×3?", a: ["8"], points: 8, emoji: "🔢" },
+        { q: "🌊 Quel est le plus grand océan du monde?", a: ["pacifique"], points: 12, emoji: "🗺️" },
+        { q: "🔴 Quelle planète est surnommée la planète rouge?", a: ["mars"], points: 8, emoji: "🚀" },
+        { q: "💡 Qui a inventé l'ampoule électrique?", a: ["edison"], points: 15, emoji: "⚡" },
+        { q: "🏔️ Quel est le plus haut sommet du monde?", a: ["everest"], points: 12, emoji: "⛰️" },
+        { q: "🦁 Quel est le roi des animaux?", a: ["lion"], points: 8, emoji: "👑" },
+        { q: "🌍 Sur quel continent se trouve le Cameroun?", a: ["afrique"], points: 10, emoji: "🌍" },
+        { q: "⚽ Combien de joueurs dans une équipe de football?", a: ["11", "onze"], points: 8, emoji: "⚽" },
+        { q: "🎨 Quelle couleur obtient-on en mélangeant rouge et bleu?", a: ["violet", "violette"], points: 10, emoji: "🎨" }
     ],
     
     loto: () => Array.from({length: 6}, () => Math.floor(Math.random() * 45) + 1).sort((a,b) => a-b),
     
     pocket: {
-        cards: ['A♠','K♠','Q♠','J♠','10♠','9♠','8♠','7♠'],
+        cards: ['🂡','🂮','🂭','🂫','🂪','🂩','🂨','🂧','🂦','🂥'],
         deal: () => {
             const deck = games.pocket.cards;
             return [deck[Math.floor(Math.random() * deck.length)], 
@@ -57,7 +62,14 @@ const games = {
             case '×': result = a * b; break;
         }
         return { question: `${a} ${op} ${b} = ?`, answer: result };
-    }
+    },
+    
+    // Nouveau jeu de devinettes
+    riddles: [
+        { q: "🤔 Je suis blanc quand je suis sale, que suis-je?", a: ["tableau", "ardoise"], points: 15, emoji: "🖍️" },
+        { q: "🕳️ Plus on m'enlève, plus je deviens grand. Que suis-je?", a: ["trou"], points: 12, emoji: "🕳️" },
+        { q: "🌙 Je brille la nuit sans être une étoile, que suis-je?", a: ["lune"], points: 10, emoji: "🌙" }
+    ]
 };
 
 // Anti-spam
@@ -91,7 +103,7 @@ function checkSpam(phone) {
 function addPoints(phone, points, reason = '') {
     if (!state.cache.leaderboard.has(phone)) {
         state.cache.leaderboard.set(phone, {
-            points: 0, wins: 0, lastActive: Date.now(), name: 'Utilisateur'
+            points: 0, wins: 0, lastActive: Date.now(), name: 'Joueur', joinDate: Date.now()
         });
     }
     const user = state.cache.leaderboard.get(phone);
@@ -155,18 +167,39 @@ const masterCommands = {
         const users = state.cache.leaderboard.size;
         const groups = state.cache.groups.size;
         const banned = state.cache.banned.size;
-        await msg.reply(`📊 *STATS BOT*\n👥 Users: ${users}\n📢 Groupes: ${groups}\n🚫 Bannis: ${banned}\n⏰ Uptime: ${Math.floor(process.uptime())}s`);
+        const uptime = Math.floor(process.uptime() / 60);
+        
+        await msg.reply(`╔═══════════════════════╗
+║      📊 STATISTIQUES BOT      ║
+╠═══════════════════════╣
+║ 👥 Joueurs actifs: ${users.toString().padStart(8)} ║
+║ 📢 Groupes: ${groups.toString().padStart(13)} ║
+║ 🚫 Utilisateurs bannis: ${banned.toString().padStart(4)} ║
+║ ⏰ Temps de fonctionnement: ${uptime}min ║
+║ 💾 Mémoire utilisée: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB ║
+╚═══════════════════════╝`);
     },
     
     async leaderboard(msg) {
-        const top = getLeaderboard().slice(0, 10);
+        const top = getLeaderboard();
         if (!top.length) return msg.reply('📋 Classement vide');
         
-        let text = '🏆 *TOP 10 JOUEURS*\n\n';
+        let text = `🏆 ═══════ CLASSEMENT GÉNÉRAL ═══════ 🏆\n\n`;
         top.forEach((user, i) => {
-            const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i+1}.`;
-            text += `${medal} ${user.name}\n💰 ${user.points} pts\n\n`;
+            const medals = ['🥇', '🥈', '🥉'];
+            const medal = i < 3 ? medals[i] : `${i + 1}️⃣`;
+            const crown = i === 0 ? '👑' : '';
+            text += `${medal} ${crown} *${user.name}*\n`;
+            text += `   💰 ${user.points.toLocaleString()} points\n`;
+            text += `   🎮 ${user.wins} victoires\n\n`;
         });
+        
+        text += `\n🎁 ═══════ RÉCOMPENSES MENSUELLES ═══════\n`;
+        text += `🥇 1er place: 1,500 FCFA\n`;
+        text += `🥈 2e place: 1,000 FCFA\n`;
+        text += `🥉 3e place: 500 FCFA\n\n`;
+        text += `⏰ Les prix sont distribués tous les 30 jours!`;
+        
         await msg.reply(text);
     },
     
@@ -179,12 +212,48 @@ const masterCommands = {
         let sent = 0;
         for (const group of groups) {
             try {
-                await state.client.sendMessage(group.id._serialized, `📢 *ANNONCE*\n\n${message}`);
+                await state.client.sendMessage(group.id._serialized, 
+                    `🔊 ═══════ ANNONCE OFFICIELLE ═══════ 🔊\n\n${message}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🎮 Gaming Bot Admin`);
                 sent++;
                 await new Promise(r => setTimeout(r, 2000));
             } catch {}
         }
-        await msg.reply(`📊 Diffusé dans ${sent}/${groups.length} groupes`);
+        await msg.reply(`📊 Message diffusé dans ${sent}/${groups.length} groupes`);
+    },
+
+    async help(msg) {
+        const helpText = `🎮 ═══════ COMMANDES ADMIN MASTER ═══════ 🎮
+
+👑 *GESTION UTILISATEURS:*
+• /makeadmin @user - Promouvoir admin
+• /ban @user - Bannir utilisateur  
+• /unban @user - Débannir utilisateur
+
+📊 *STATISTIQUES:*
+• /stats - Statistiques détaillées
+• /leaderboard - Classement complet
+• /userinfo @user - Info utilisateur
+
+📢 *COMMUNICATION:*
+• /broadcast [message] - Diffusion globale
+• /announce [message] - Annonce importante
+
+🎯 *JEUX & POINTS:*
+• /addpoints @user [points] - Ajouter points
+• /removepoints @user [points] - Retirer points
+• /resetuser @user - Reset utilisateur
+• /prize - Gérer les prix mensuels
+
+⚙️ *SYSTÈME:*
+• /restart - Redémarrer bot
+• /backup - Sauvegarder données
+• /logs - Voir les logs
+
+🛠️ *MAINTENANCE:*
+• /maintenance on/off - Mode maintenance
+• /update - Mettre à jour bot`;
+
+        await msg.reply(helpText);
     }
 };
 
@@ -203,7 +272,7 @@ const adminCommands = {
         settings.noLinks = !settings.noLinks;
         state.cache.groups.set(groupId, settings);
         
-        await msg.reply(`🔗 Liens ${settings.noLinks ? 'INTERDITS' : 'AUTORISÉS'}`);
+        await msg.reply(`🔗 ═══════ PARAMÈTRE MODIFIÉ ═══════\n\n${settings.noLinks ? '🚫 Les liens sont maintenant INTERDITS' : '✅ Les liens sont maintenant AUTORISÉS'}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     },
     
     async adminonly(msg) {
@@ -219,28 +288,37 @@ const adminCommands = {
         settings.adminOnly = !settings.adminOnly;
         state.cache.groups.set(groupId, settings);
         
-        await msg.reply(`👑 Mode admin ${settings.adminOnly ? 'ACTIVÉ' : 'DÉSACTIVÉ'}`);
+        await msg.reply(`👑 ═══════ MODE ADMIN ═══════\n\n${settings.adminOnly ? '🔒 Seuls les ADMINS peuvent utiliser les commandes' : '🔓 TOUS peuvent utiliser les commandes'}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     },
     
     async kick(msg) {
         const mentions = await msg.getMentions();
-        if (!mentions.length) return msg.reply('❌ Mentionnez quelqu\'un');
+        if (!mentions.length) return msg.reply('❌ Mentionnez quelqu\'un à exclure');
         
         const chat = await msg.getChat();
         try {
             await chat.removeParticipants([mentions[0].id._serialized]);
-            await msg.reply(`✅ ${mentions[0].pushname} exclu`);
+            await msg.reply(`✅ ═══════ EXCLUSION RÉUSSIE ═══════\n\n👋 ${mentions[0].pushname} a été exclu du groupe\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
         } catch {
-            await msg.reply('❌ Impossible d\'exclure');
+            await msg.reply('❌ Impossible d\'exclure cet utilisateur');
         }
     }
 };
 
-// Commandes Jeux
+// Commandes Jeux améliorées
 const gameCommands = {
     async quiz(msg, phone) {
         const quiz = games.quizzes[Math.floor(Math.random() * games.quizzes.length)];
-        await msg.reply(`🧠 *QUIZ* (+${quiz.points}pts)\n\n❓ ${quiz.q}\n\n⏰ 30 secondes pour répondre`);
+        await msg.reply(`🧠 ═══════ QUIZ CHALLENGE ═══════ 🧠
+
+${quiz.emoji} *QUESTION:*
+${quiz.q}
+
+🎯 *RÉCOMPENSE:* +${quiz.points} points
+⏰ *TEMPS LIMITE:* 30 secondes
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 Tapez votre réponse maintenant!`);
         
         const timeout = setTimeout(() => {
             state.cache[`quiz_${phone}`] = null;
@@ -257,20 +335,56 @@ const gameCommands = {
         const points = win ? 50 : 5;
         
         addPoints(phone, points);
-        await msg.reply(`🎲 *LOTO*\n🎯 Vos numéros: ${numbers.join('-')}\n🎰 Tirage: ${userGuess}\n${win ? '🎉 GAGNÉ!' : '😅 Perdu'}\n💰 +${points} points`);
+        
+        const resultText = `🎲 ═══════ SUPER LOTO ═══════ 🎲
+
+🎯 *VOS NUMÉROS:* ${numbers.join(' - ')}
+🎰 *NUMÉRO GAGNANT:* ${userGuess}
+
+${win ? '🎉 ✨ FÉLICITATIONS! VOUS AVEZ GAGNÉ! ✨' : '😅 Pas de chance cette fois...'}
+
+💰 *POINTS GAGNÉS:* +${points}
+🏆 *STATUT:* ${win ? 'GAGNANT 🏆' : 'PARTICIPATION 🎯'}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+
+        await msg.reply(resultText);
     },
     
     async pocket(msg, phone) {
         const cards = games.pocket.deal();
-        const points = cards[0] === cards[1] ? 30 : 10;
+        const isPair = cards[0] === cards[1];
+        const points = isPair ? 30 : 10;
         
         addPoints(phone, points);
-        await msg.reply(`🃏 *POCKET*\n🎴 Vos cartes: ${cards.join(' ')}\n${cards[0] === cards[1] ? '🎉 PAIRE!' : '🎯 Pas mal'}\n💰 +${points} points`);
+        
+        const resultText = `🃏 ═══════ POCKET CARDS ═══════ 🃏
+
+🎴 *VOS CARTES:*
+   ${cards[0]}    ${cards[1]}
+
+${isPair ? '🎉 ✨ PAIRE PARFAITE! ✨' : '🎯 Belle combinaison!'}
+
+💰 *POINTS GAGNÉS:* +${points}
+🏆 *BONUS:* ${isPair ? 'PAIRE x3' : 'NORMAL'}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+
+        await msg.reply(resultText);
     },
     
     async calc(msg, phone) {
         const problem = games.calc();
-        await msg.reply(`🔢 *CALCUL* (+15pts)\n\n❓ ${problem.question}\n\n⏰ 20 secondes`);
+        await msg.reply(`🔢 ═══════ CALCUL RAPIDE ═══════ 🔢
+
+🧮 *CALCUL À RÉSOUDRE:*
+   ${problem.question}
+
+🎯 *RÉCOMPENSE:* +15 points
+⏰ *TEMPS LIMITE:* 20 secondes
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔥 Répondez vite pour gagner!`);
         
         const timeout = setTimeout(() => {
             state.cache[`calc_${phone}`] = null;
@@ -279,39 +393,164 @@ const gameCommands = {
         state.cache[`calc_${phone}`] = { ...problem, timeout };
         addPoints(phone, CONFIG.POINTS.DAILY_USE);
     },
+
+    async riddle(msg, phone) {
+        const riddle = games.riddles[Math.floor(Math.random() * games.riddles.length)];
+        await msg.reply(`🤔 ═══════ ÉNIGME MYSTÈRE ═══════ 🤔
+
+${riddle.emoji} *ÉNIGME:*
+${riddle.q}
+
+🎯 *RÉCOMPENSE:* +${riddle.points} points
+⏰ *TEMPS LIMITE:* 45 secondes
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🧠 Réfléchissez bien...`);
+        
+        const timeout = setTimeout(() => {
+            state.cache[`riddle_${phone}`] = null;
+        }, 45000);
+        
+        state.cache[`riddle_${phone}`] = { ...riddle, timeout };
+        addPoints(phone, CONFIG.POINTS.DAILY_USE);
+    },
     
     async points(msg, phone) {
         const user = state.cache.leaderboard.get(phone);
-        const rank = getLeaderboard().findIndex(u => u.phone === phone.replace('@c.us', '')) + 1;
+        const leaderboard = getLeaderboard();
+        const rank = leaderboard.findIndex(u => u.phone === phone.replace('@c.us', '')) + 1;
         
         if (!user) return msg.reply('🎮 Jouez d\'abord pour avoir des points!');
         
-        await msg.reply(`💰 *VOS POINTS*\n🎯 Points: ${user.points}\n🏆 Rang: ${rank || 'Non classé'}\n🎮 Victoires: ${user.wins}`);
+        const daysActive = Math.floor((Date.now() - user.joinDate) / (1000 * 60 * 60 * 24));
+        const avgPointsPerDay = daysActive > 0 ? Math.round(user.points / daysActive) : 0;
+        
+        await msg.reply(`💰 ═══════ VOS STATISTIQUES ═══════ 💰
+
+👤 *JOUEUR:* ${user.name}
+🎯 *POINTS TOTAUX:* ${user.points.toLocaleString()}
+🏆 *RANG ACTUEL:* ${rank || 'Non classé'}/20
+🎮 *VICTOIRES:* ${user.wins}
+📅 *JOURS ACTIFS:* ${daysActive}
+📊 *MOYENNE/JOUR:* ${avgPointsPerDay} pts
+
+${rank <= 3 ? '🎁 *VOUS ÊTES DANS LE TOP 3!*\n🏆 Continuez pour gagner des prix!' : ''}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     },
     
     async top(msg) {
-        const top = getLeaderboard().slice(0, 5);
+        const top = getLeaderboard();
         if (!top.length) return msg.reply('📋 Classement vide');
         
-        let text = '🏆 *TOP 5*\n\n';
+        let text = `🏆 ═══════ TOP 20 JOUEURS ═══════ 🏆\n\n`;
+        
         top.forEach((user, i) => {
-            const medal = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣'][i];
-            text += `${medal} ${user.name}\n💰 ${user.points} pts\n\n`;
+            const medals = ['🥇', '🥈', '🥉'];
+            const medal = i < 3 ? medals[i] : `${(i + 1).toString().padStart(2, '0')}`;
+            const crown = i === 0 ? '👑' : '';
+            
+            text += `${medal} ${crown} *${user.name}* - ${user.points.toLocaleString()} pts\n`;
         });
+        
+        text += `\n🎁 ═══════ RÉCOMPENSES MENSUELLES ═══════\n`;
+        text += `🥇 1er place: 1,500 FCFA\n`;
+        text += `🥈 2e place: 1,000 FCFA\n`;
+        text += `🥉 3e place: 500 FCFA\n\n`;
+        text += `⏰ *Les prix sont distribués tous les 30 jours!*\n`;
+        text += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+        
         await msg.reply(text);
     }
 };
 
-// Interface web
+// Interface web améliorée
 const app = express();
 app.get('/', (req, res) => {
     const html = state.ready ? 
-        `<h1>✅ Bot Gaming Online</h1><p>👥 ${state.cache.leaderboard.size} joueurs</p><p>📢 ${state.cache.groups.size} groupes</p>` :
+        `<div class="container">
+            <h1>🎮 Gaming Bot - ONLINE ✅</h1>
+            <div class="stats">
+                <div class="stat-card">
+                    <h3>👥 Joueurs</h3>
+                    <p>${state.cache.leaderboard.size}</p>
+                </div>
+                <div class="stat-card">
+                    <h3>📢 Groupes</h3>
+                    <p>${state.cache.groups.size}</p>
+                </div>
+                <div class="stat-card">
+                    <h3>⏰ Uptime</h3>
+                    <p>${Math.floor(process.uptime() / 60)}min</p>
+                </div>
+            </div>
+        </div>` :
         state.qr ? 
-        `<h1>📱 Scanner QR</h1><img src="data:image/png;base64,${state.qr}">` :
-        `<h1>🔄 Chargement...</h1>`;
+        `<div class="container">
+            <h1>📱 Scanner le QR Code</h1>
+            <img src="data:image/png;base64,${state.qr}" class="qr-code">
+            <p>Scannez avec WhatsApp</p>
+        </div>` :
+        `<div class="container">
+            <h1>🔄 Chargement du bot...</h1>
+            <div class="loader"></div>
+        </div>`;
     
-    res.send(`<html><head><title>Gaming Bot</title><style>body{text-align:center;font-family:Arial;background:#25D366;color:white;padding:50px}</style></head><body>${html}</body></html>`);
+    const css = `
+        <style>
+            body { 
+                font-family: 'Arial', sans-serif; 
+                background: linear-gradient(135deg, #25D366, #075E54); 
+                color: white; 
+                margin: 0; 
+                padding: 0; 
+                min-height: 100vh; 
+                display: flex; 
+                justify-content: center; 
+                align-items: center; 
+            }
+            .container { 
+                text-align: center; 
+                background: rgba(255,255,255,0.1); 
+                padding: 40px; 
+                border-radius: 20px; 
+                backdrop-filter: blur(10px); 
+                box-shadow: 0 8px 32px rgba(0,0,0,0.3); 
+            }
+            .stats { 
+                display: flex; 
+                gap: 20px; 
+                margin-top: 20px; 
+                justify-content: center; 
+            }
+            .stat-card { 
+                background: rgba(255,255,255,0.2); 
+                padding: 20px; 
+                border-radius: 15px; 
+                min-width: 100px; 
+            }
+            .qr-code { 
+                max-width: 300px; 
+                border-radius: 15px; 
+                margin: 20px 0; 
+            }
+            .loader { 
+                border: 4px solid rgba(255,255,255,0.3); 
+                border-radius: 50%; 
+                border-top: 4px solid white; 
+                width: 40px; 
+                height: 40px; 
+                animation: spin 2s linear infinite; 
+                margin: 20px auto; 
+            }
+            @keyframes spin { 
+                0% { transform: rotate(0deg); } 
+                100% { transform: rotate(360deg); } 
+            }
+        </style>
+    `;
+    
+    res.send(`<html><head><title>Gaming Bot Dashboard</title>${css}</head><body>${html}</body></html>`);
 });
 
 // Client WhatsApp
@@ -325,19 +564,69 @@ const client = new Client({
 
 client.on('qr', async (qr) => {
     state.qr = (await QRCode.toDataURL(qr)).split(',')[1];
+    console.log('📱 QR Code généré');
 });
 
-client.on('ready', () => {
+client.on('ready', async () => {
     state.ready = true;
     state.client = client;
     console.log('🎮 Gaming Bot Ready!');
+    
+    // Notification à l'admin principal
+    try {
+        await client.sendMessage(CONFIG.ADMIN_NUMBER, 
+            `🚀 ═══════ BOT GAMING ONLINE ═══════ 🚀
+
+✅ *STATUT:* Bot démarré avec succès
+⏰ *HEURE:* ${new Date().toLocaleString('fr-FR')}
+🔧 *VERSION:* 2.0 Enhanced
+
+📊 *FONCTIONNALITÉS ACTIVES:*
+• 🎮 Jeux interactifs
+• 🏆 Système de classement
+• 💰 Récompenses mensuelles
+• 🛡️ Anti-spam avancé
+• 👑 Gestion des groupes
+
+🎯 *COMMANDES ADMIN DISPONIBLES:*
+Tapez /help pour voir toutes vos commandes
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎮 Votre Gaming Bot est prêt!`);
+    } catch (error) {
+        console.error('Erreur notification admin:', error);
+    }
 });
 
 client.on('group_join', async (notification) => {
     const chat = await notification.getChat();
     setTimeout(async () => {
         await client.sendMessage(chat.id._serialized, 
-            `🎮 *SALUT ${chat.name.toUpperCase()}!*\n\n🎯 Bot de jeux et gestion\n\n🎲 Commandes:\n• /quiz - Quiz\n• /loto - Loto\n• /calc - Calcul\n• /pocket - Cartes\n• /points - Vos points\n• /top - Classement\n\n👑 Admins:\n• /nolinks - Bloquer liens\n• /adminonly - Mode admin\n\nAmusez-vous bien! 🎉`
+            `🎮 ═══════ BIENVENUE DANS ${chat.name.toUpperCase()}! ═══════ 🎮
+
+🚀 *Gaming Bot activé avec succès!*
+
+🎯 *JEUX DISPONIBLES:*
+• /quiz - Questions culture générale
+• /loto - Loterie avec gros lots
+• /calc - Calculs rapides
+• /pocket - Jeu de cartes
+• /riddle - Énigmes mystères
+
+🏆 *CLASSEMENT & POINTS:*
+• /points - Vos statistiques
+• /top - Top 20 joueurs
+
+👑 *COMMANDES ADMIN:*
+• /nolinks - Bloquer les liens
+• /adminonly - Mode admin seul
+• /kick @user - Exclure membre
+
+🎁 *RÉCOMPENSES MENSUELLES:*
+🥇 1er: 1,500 FCFA | 🥈 2e: 1,000 FCFA | 🥉 3e: 500 FCFA
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎮 Amusez-vous bien et que le meilleur gagne! 🏆`
         );
     }, 3000);
 });
@@ -354,7 +643,7 @@ client.on('message', async (msg) => {
         
         // Anti-spam
         if (checkSpam(phone)) {
-            return msg.reply('🚫 Anti-spam activé. Attendez 5 minutes.');
+            return msg.reply('🚫 ═══════ ANTI-SPAM ACTIVÉ ═══════\n\n⏰ Vous envoyez trop de messages!\n🔒 Attendez 5 minutes avant de réessayer.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         }
         
         // Mettre à jour nom utilisateur
@@ -372,7 +661,7 @@ client.on('message', async (msg) => {
                 const isAdmin = await isGroupAdmin(chat.id._serialized, phone);
                 if (!isAdmin && await isBotAdmin(chat.id._serialized)) {
                     await msg.delete(true);
-                    return msg.reply('🔗 Liens interdits dans ce groupe!');
+                    return msg.reply('🔗 ═══════ LIEN DÉTECTÉ ═══════\n\n🚫 Les liens sont interdits dans ce groupe!\n👑 Seuls les admins peuvent partager des liens.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
                 }
             }
             
@@ -380,7 +669,7 @@ client.on('message', async (msg) => {
             if (groupSettings?.adminOnly && text.startsWith('/')) {
                 const isAdmin = await isGroupAdmin(chat.id._serialized, phone);
                 if (!isAdmin && phone !== CONFIG.ADMIN_NUMBER) {
-                    return msg.reply('👑 Commandes réservées aux admins');
+                    return msg.reply('👑 ═══════ ACCÈS RESTREINT ═══════\n\n🔒 Les commandes sont réservées aux admins!\n💬 Contactez un administrateur pour plus d\'infos.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
                 }
             }
         }
@@ -395,9 +684,25 @@ client.on('message', async (msg) => {
                 const points = addPoints(phone, quiz.points, 'quiz');
                 const user = state.cache.leaderboard.get(phone);
                 user.wins++;
-                return msg.reply(`🎉 *CORRECT!*\n💰 +${quiz.points} points\n🎯 Total: ${points} points`);
+                return msg.reply(`🎉 ═══════ BRAVO! BONNE RÉPONSE! ═══════ 🎉
+
+${quiz.emoji} *QUIZ RÉUSSI!*
+✅ *RÉPONSE:* ${quiz.a[0]}
+💰 *POINTS GAGNÉS:* +${quiz.points}
+🎯 *TOTAL POINTS:* ${points.toLocaleString()}
+🏆 *VICTOIRES:* ${user.wins}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎮 Continuez à jouer pour gravir le classement!`);
             } else {
-                return msg.reply(`❌ *FAUX!*\n✅ Réponse: ${quiz.a[0]}`);
+                return msg.reply(`❌ ═══════ RÉPONSE INCORRECTE ═══════ ❌
+
+${quiz.emoji} *QUIZ ÉCHOUÉ*
+✅ *BONNE RÉPONSE:* ${quiz.a[0]}
+💡 *CONSEIL:* Réfléchissez bien la prochaine fois!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎮 Retentez votre chance avec /quiz`);
             }
         }
         
@@ -410,9 +715,56 @@ client.on('message', async (msg) => {
                 const points = addPoints(phone, 15, 'calc');
                 const user = state.cache.leaderboard.get(phone);
                 user.wins++;
-                return msg.reply(`🎉 *EXACT!*\n💰 +15 points\n🎯 Total: ${points} points`);
+                return msg.reply(`🎉 ═══════ CALCUL PARFAIT! ═══════ 🎉
+
+🔢 *CALCUL RÉUSSI!*
+✅ *RÉPONSE:* ${calc.answer}
+💰 *POINTS GAGNÉS:* +15
+🎯 *TOTAL POINTS:* ${points.toLocaleString()}
+🏆 *VICTOIRES:* ${user.wins}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🧮 Votre rapidité est impressionnante!`);
             } else {
-                return msg.reply(`❌ *FAUX!*\n✅ Réponse: ${calc.answer}`);
+                return msg.reply(`❌ ═══════ CALCUL INCORRECT ═══════ ❌
+
+🔢 *CALCUL ÉCHOUÉ*
+✅ *BONNE RÉPONSE:* ${calc.answer}
+💡 *CONSEIL:* Prenez votre temps pour calculer!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎮 Retentez avec /calc`);
+            }
+        }
+
+        if (state.cache[`riddle_${phone}`]) {
+            const riddle = state.cache[`riddle_${phone}`];
+            clearTimeout(riddle.timeout);
+            state.cache[`riddle_${phone}`] = null;
+            
+            if (riddle.a.some(ans => text.toLowerCase().includes(ans))) {
+                const points = addPoints(phone, riddle.points, 'riddle');
+                const user = state.cache.leaderboard.get(phone);
+                user.wins++;
+                return msg.reply(`🎉 ═══════ ÉNIGME RÉSOLUE! ═══════ 🎉
+
+${riddle.emoji} *GÉNIAL!*
+✅ *RÉPONSE:* ${riddle.a[0]}
+💰 *POINTS GAGNÉS:* +${riddle.points}
+🎯 *TOTAL POINTS:* ${points.toLocaleString()}
+🏆 *VICTOIRES:* ${user.wins}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🧠 Votre logique est excellente!`);
+            } else {
+                return msg.reply(`❌ ═══════ ÉNIGME NON RÉSOLUE ═══════ ❌
+
+${riddle.emoji} *RÉPONSE INCORRECTE*
+✅ *SOLUTION:* ${riddle.a[0]}
+💡 *CONSEIL:* Réfléchissez différemment!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎮 Nouvelle énigme avec /riddle`);
             }
         }
         
@@ -425,6 +777,7 @@ client.on('message', async (msg) => {
                 case '/stats': return masterCommands.stats(msg);
                 case '/leaderboard': return masterCommands.leaderboard(msg);
                 case '/broadcast': return masterCommands.broadcast(msg, args);
+                case '/help': return masterCommands.help(msg);
             }
         }
         
@@ -446,19 +799,44 @@ client.on('message', async (msg) => {
             case '/loto': return gameCommands.loto(msg, phone);
             case '/pocket': return gameCommands.pocket(msg, phone);
             case '/calc': return gameCommands.calc(msg, phone);
+            case '/riddle': return gameCommands.riddle(msg, phone);
             case '/points': return gameCommands.points(msg, phone);
             case '/top': return gameCommands.top(msg);
             case '/help':
-                return msg.reply(`🎮 *COMMANDES BOT*\n\n🎯 *JEUX:*\n• /quiz - Questions\n• /loto - Loterie\n• /calc - Calculs\n• /pocket - Cartes\n• /points - Vos points\n• /top - Top 5\n\n👑 *ADMIN:*\n• /nolinks - Bloquer liens\n• /adminonly - Mode admin\n• /kick @user - Exclure\n\n🏆 Gagnez des points et montez dans le classement!`);
+                return msg.reply(`🎮 ═══════ GUIDE DES COMMANDES ═══════ 🎮
+
+🎯 *JEUX DISPONIBLES:*
+• /quiz - Questions culture générale (+10-15 pts)
+• /loto - Loterie avec gros lots (+5-50 pts)
+• /calc - Calculs mathématiques (+15 pts)
+• /pocket - Jeu de cartes (+10-30 pts)
+• /riddle - Énigmes mystères (+10-15 pts)
+
+🏆 *CLASSEMENT & STATS:*
+• /points - Vos statistiques personnelles
+• /top - Top 20 des meilleurs joueurs
+
+👑 *COMMANDES ADMIN (Groupes):*
+• /nolinks - Activer/désactiver les liens
+• /adminonly - Mode commandes admin seul
+• /kick @user - Exclure un membre
+
+🎁 *SYSTÈME DE RÉCOMPENSES:*
+🥇 1er place: 1,500 FCFA (mensuel)
+🥈 2e place: 1,000 FCFA (mensuel)  
+🥉 3e place: 500 FCFA (mensuel)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎮 Amusez-vous et gagnez des prix! 🏆`);
         }
         
     } catch (error) {
         console.error('Erreur:', error);
-        await msg.reply('❌ Erreur. Réessayez.');
+        await msg.reply('❌ ═══════ ERREUR SYSTÈME ═══════\n\n🔧 Une erreur technique s\'est produite.\n🔄 Veuillez réessayer dans quelques instants.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     }
 });
 
-// Vérification mensuelle des prix
+// Vérification mensuelle des prix améliorée
 setInterval(async () => {
     const top3 = getLeaderboard().slice(0, 3);
     const now = new Date();
@@ -467,19 +845,59 @@ setInterval(async () => {
         const user = top3[i];
         const userData = state.cache.leaderboard.get(`${user.phone}@c.us`);
         
-        if (userData && userData.lastActive) {
-            const daysSinceActive = (now - new Date(userData.lastActive)) / (1000 * 60 * 60 * 24);
+        if (userData && userData.joinDate) {
+            const daysSinceJoin = (now - new Date(userData.joinDate)) / (1000 * 60 * 60 * 24);
             
-            if (daysSinceActive >= 30) {
+            if (daysSinceJoin >= 30) {
                 const prize = CONFIG.POINTS.PRIZES[i];
+                const position = i + 1;
+                const medals = ['🥇', '🥈', '🥉'];
+                
                 try {
+                    // Message au gagnant
                     await client.sendMessage(`${user.phone}@c.us`, 
-                        `🎉 *FÉLICITATIONS!*\n\n🏆 Vous êtes ${i+1}${i === 0 ? 'er' : 'ème'} du classement!\n💰 Vous avez gagné ${prize} FCFA\n\n📞 Contactez l'admin pour récupérer votre prix: ${CONFIG.ADMIN_NUMBER.replace('@c.us', '')}`
+                        `🎉 ═══════ FÉLICITATIONS! ═══════ 🎉
+
+${medals[i]} *VOUS AVEZ GAGNÉ UN PRIX!*
+
+🏆 *POSITION:* ${position}${position === 1 ? 'er' : 'e'} place du classement
+👤 *JOUEUR:* ${user.name}
+💰 *PRIX:* ${prize.toLocaleString()} FCFA
+⭐ *POINTS TOTAUX:* ${user.points.toLocaleString()}
+
+🎯 *POUR RÉCUPÉRER VOTRE PRIX:*
+Cliquez sur ce lien pour contacter l'admin:
+https://wa.me/+237651104356?text=Bonjour%20Admin%2C%20je%20suis%20${encodeURIComponent(user.name)}%20et%20j'ai%20fini%20${position}${position === 1 ? 'er' : 'e'}%20du%20classement.%20Je%20viens%20récupérer%20mon%20prix%20de%20${prize}%20FCFA.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎮 Bravo pour votre performance! 🏆`
                     );
                     
+                    // Notification à l'admin
                     await client.sendMessage(CONFIG.ADMIN_NUMBER, 
-                        `💰 *PRIX À PAYER*\n👤 ${user.name} (${user.phone})\n🏆 Position: ${i+1}\n💰 Montant: ${prize} FCFA`
+                        `💰 ═══════ PRIX À DISTRIBUER ═══════ 💰
+
+${medals[i]} *GAGNANT DU MOIS:*
+👤 *NOM:* ${user.name}
+📱 *NUMÉRO:* ${user.phone}
+🏆 *RANG:* ${position}${position === 1 ? 'er' : 'e'} place
+💰 *MONTANT:* ${prize.toLocaleString()} FCFA
+⭐ *POINTS:* ${user.points.toLocaleString()}
+📅 *DATE:* ${now.toLocaleDateString('fr-FR')}
+
+🎯 *ACTIONS À PRENDRE:*
+• Vérifier l'identité du gagnant
+• Préparer le paiement de ${prize} FCFA
+• Confirmer la transaction
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎮 Nouveau cycle de récompenses démarré!`
                     );
+                    
+                    // Marquer comme récompensé
+                    userData.lastReward = now.getTime();
+                    state.cache.leaderboard.set(`${user.phone}@c.us`, userData);
+                    
                 } catch (e) {
                     console.error('Erreur envoi prix:', e);
                 }
@@ -488,16 +906,55 @@ setInterval(async () => {
     }
 }, 24 * 60 * 60 * 1000); // Vérification quotidienne
 
-// Sauvegarde périodique (pour Render)
+// Sauvegarde périodique et statistiques
 setInterval(() => {
-    // Pas de sauvegarde fichier sur Render gratuit
-    console.log(`💗 ${state.cache.leaderboard.size} joueurs - ${state.cache.groups.size} groupes`);
-}, 300000);
+    const stats = {
+        players: state.cache.leaderboard.size,
+        groups: state.cache.groups.size,
+        totalPoints: Array.from(state.cache.leaderboard.values()).reduce((sum, user) => sum + user.points, 0),
+        totalGames: Array.from(state.cache.leaderboard.values()).reduce((sum, user) => sum + user.wins, 0)
+    };
+    
+    console.log(`🎮 ═══════ STATISTIQUES BOT ═══════
+👥 Joueurs actifs: ${stats.players}
+📢 Groupes connectés: ${stats.groups}  
+💰 Points distribués: ${stats.totalPoints.toLocaleString()}
+🎯 Parties jouées: ${stats.totalGames.toLocaleString()}
+💾 Mémoire: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+}, 300000); // Toutes les 5 minutes
 
+// Démarrage du client et serveur
 client.initialize();
-app.listen(CONFIG.PORT, () => console.log(`🌐 Port ${CONFIG.PORT}`));
+app.listen(CONFIG.PORT, () => {
+    console.log(`🌐 ═══════ SERVEUR DÉMARRÉ ═══════
+🔗 Port: ${CONFIG.PORT}
+🎮 Dashboard: http://localhost:${CONFIG.PORT}
+⚡ Status: En ligne
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+});
 
+// Gestion propre de l'arrêt
 process.on('SIGTERM', () => {
-    console.log('🛑 Arrêt...');
-    process.exit(0);
+    console.log('🛑 ═══════ ARRÊT DU BOT ═══════');
+    
+    // Notification d'arrêt à l'admin
+    if (state.client && state.ready) {
+        state.client.sendMessage(CONFIG.ADMIN_NUMBER, 
+            `🛑 ═══════ BOT GAMING OFFLINE ═══════
+
+⚠️ *STATUT:* Bot arrêté
+⏰ *HEURE:* ${new Date().toLocaleString('fr-FR')}
+📊 *DERNIÈRES STATS:*
+• ${state.cache.leaderboard.size} joueurs
+• ${state.cache.groups.size} groupes
+
+🔄 *REDÉMARRAGE:* Automatique prévu
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`
+        ).finally(() => {
+            process.exit(0);
+        });
+    } else {
+        process.exit(0);
+    }
 });
