@@ -219,12 +219,15 @@ const masterCommands = {
                     `🔊 ════ ANNONCE OFFICIELLE ════ 🔊\n\n${message}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🎮 Gaming Bot Admin`);
                 sent++;
                 await new Promise(r => setTimeout(r, 2000));
-            } catch {}
+            } catch (error) {
+                // Gestion d'erreur améliorée
+                console.log('Erreur envoi message:', error);
+            }
         }
         await msg.reply(`📊 Message diffusé dans ${sent}/${groups.length} groupes`);
     },
 
-     async ban(msg, args) {
+    async ban(msg, args) {
         if (!args.length) return msg.reply('❌ Usage: /ban @user [raison]');
         
         const mentions = await msg.getMentions();
@@ -291,7 +294,9 @@ const masterCommands = {
                     `📢 ════ ANNONCE IMPORTANTE ════ 📢\n\n${message}\n\n⚠️ *Message officiel du Gaming Bot*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
                 sent++;
                 await new Promise(r => setTimeout(r, 1500));
-            } catch {}
+            } catch (error) {
+                console.log('Erreur envoi annonce:', error);
+            }
         }
         await msg.reply(`📊 Annonce envoyée dans ${sent}/${groups.length} groupes`);
     },
@@ -458,7 +463,6 @@ const masterCommands = {
         await msg.reply(helpText);
     }
 };
-
 // Commandes Admin Groupe
 const adminCommands = {
     async nolinks(msg) {
@@ -666,6 +670,7 @@ ${rank <= 3 ? '🎁 *VOUS ÊTES DANS LE TOP 3!*\n🏆 Continuez pour gagner des 
     }
 };
 
+// CORRECTION: Fonction handleGameResponses corrigée
 async function handleGameResponses(msg, phone, text) {
     // Quiz responses
     if (state.cache[`quiz_${phone}`]) {
@@ -749,10 +754,7 @@ ${riddle.emoji} *EXCELLENT!*
             }, null, 'Riddle fail reply');
         }
     }
-};
-    
-}
-
+} 
 async function executeCommands(msg, phone, cmd, args, chat) {
     // Vérifier le mode maintenance (sauf pour l'admin principal)
     if (global.maintenanceMode && phone !== CONFIG.ADMIN_NUMBER) {
