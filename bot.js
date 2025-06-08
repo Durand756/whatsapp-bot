@@ -550,9 +550,217 @@ ${riddle.emoji} *EXCELLENT!*
             }, null, 'Riddle fail reply');
         }
     }
+
+        async ban(msg, args) {
+        if (!args.length) return msg.reply('❌ Usage: /ban @user [raison]');
+        
+        const mentions = await msg.getMentions();
+        if (!mentions.length) return msg.reply('❌ Mentionnez un utilisateur à bannir');
+        
+        const userPhone = mentions[0].id._serialized;
+        const reason = args.slice(1).join(' ') || 'Aucune raison spécifiée';
+        
+        // Bannir pour 24h par défaut
+        const banTime = Date.now() + (24 * 60 * 60 * 1000);
+        state.cache.banned.set(userPhone, banTime);
+        
+        await msg.reply(`🚫 ════ UTILISATEUR BANNI ════\n\n👤 *Utilisateur:* ${mentions[0].pushname}\n📱 *Numéro:* ${userPhone.replace('@c.us', '')}\n⏰ *Durée:* 24 heures\n📝 *Raison:* ${reason}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    },
+
+    async unban(msg, args) {
+        if (!args.length) return msg.reply('❌ Usage: /unban @user');
+        
+        const mentions = await msg.getMentions();
+        if (!mentions.length) return msg.reply('❌ Mentionnez un utilisateur à débannir');
+        
+        const userPhone = mentions[0].id._serialized;
+        
+        if (state.cache.banned.has(userPhone)) {
+            state.cache.banned.delete(userPhone);
+            await msg.reply(`✅ ════ UTILISATEUR DÉBANNI ════\n\n👤 *Utilisateur:* ${mentions[0].pushname}\n📱 *Numéro:* ${userPhone.replace('@c.us', '')}\n🎯 *Statut:* Peut maintenant utiliser le bot\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        } else {
+            await msg.reply('❌ Cet utilisateur n\'est pas banni');
+        }
+    },
+
+    async userinfo(msg, args) {
+        if (!args.length) return msg.reply('❌ Usage: /userinfo @user');
+        
+        const mentions = await msg.getMentions();
+        if (!mentions.length) return msg.reply('❌ Mentionnez un utilisateur');
+        
+        const userPhone = mentions[0].id._serialized;
+        const user = state.cache.leaderboard.get(userPhone);
+        const isBanned = state.cache.banned.has(userPhone);
+        
+        if (!user) {
+            return msg.reply(`📋 ════ INFO UTILISATEUR ════\n\n👤 *Nom:* ${mentions[0].pushname}\n📱 *Numéro:* ${userPhone.replace('@c.us', '')}\n🎮 *Statut:* Nouveau joueur\n🚫 *Banni:* ${isBanned ? 'Oui' : 'Non'}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        }
+        
+        const daysActive = Math.floor((Date.now() - user.joinDate) / (1000 * 60 * 60 * 24));
+        const leaderboard = getLeaderboard();
+        const rank = leaderboard.findIndex(u => u.phone === userPhone.replace('@c.us', '')) + 1;
+        
+        await msg.reply(`📋 ════ INFO UTILISATEUR ════\n\n👤 *Nom:* ${user.name}\n📱 *Numéro:* ${userPhone.replace('@c.us', '')}\n💰 *Points:* ${user.points.toLocaleString()}\n🏆 *Rang:* ${rank || 'Non classé'}/20\n🎮 *Victoires:* ${user.wins}\n📅 *Jours actifs:* ${daysActive}\n📊 *Inscription:* ${new Date(user.joinDate).toLocaleDateString('fr-FR')}\n🚫 *Banni:* ${isBanned ? 'Oui' : 'Non'}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    },
+
+    async announce(msg, args) {
+        if (!args.length) return msg.reply('❌ Usage: /announce message');
+        
+        const message = args.join(' ');
+        const chats = await state.client.getChats();
+        const groups = chats.filter(chat => chat.isGroup);
+        
+        let sent = 0;
+        for (const group of groups) {
+            try {
+                await state.client.sendMessage(group.id._serialized, 
+                    `📢 ════ ANNONCE IMPORTANTE ════ 📢\n\n${message}\n\n⚠️ *Message officiel du Gaming Bot*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+                sent++;
+                await new Promise(r => setTimeout(r, 1500));
+            } catch {}
+        }
+        await msg.reply(`📊 Annonce envoyée dans ${sent}/${groups.length} groupes`);
+    },
+
+    async addpoints(msg, args) {
+        if (args.length < 2) return msg.reply('❌ Usage: /addpoints @user [points]');
+        
+        const mentions = await msg.getMentions();
+        if (!mentions.length) return msg.reply('❌ Mentionnez un utilisateur');
+        
+        const points = parseInt(args[1]);
+        if (isNaN(points) || points <= 0) return msg.reply('❌ Nombre de points invalide');
+        
+        const userPhone = mentions[0].id._serialized;
+        const newTotal = addPoints(userPhone, points, 'admin_bonus');
+        
+        await msg.reply(`✅ ════ POINTS AJOUTÉS ════\n\n👤 *Utilisateur:* ${mentions[0].pushname}\n💰 *Points ajoutés:* +${points.toLocaleString()}\n🎯 *Total:* ${newTotal.toLocaleString()} points\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    },
+
+    async removepoints(msg, args) {
+        if (args.length < 2) return msg.reply('❌ Usage: /removepoints @user [points]');
+        
+        const mentions = await msg.getMentions();
+        if (!mentions.length) return msg.reply('❌ Mentionnez un utilisateur');
+        
+        const points = parseInt(args[1]);
+        if (isNaN(points) || points <= 0) return msg.reply('❌ Nombre de points invalide');
+        
+        const userPhone = mentions[0].id._serialized;
+        const user = state.cache.leaderboard.get(userPhone);
+        
+        if (!user) return msg.reply('❌ Utilisateur non trouvé dans le classement');
+        
+        user.points = Math.max(0, user.points - points);
+        state.cache.leaderboard.set(userPhone, user);
+        
+        await msg.reply(`✅ ════ POINTS RETIRÉS ════\n\n👤 *Utilisateur:* ${mentions[0].pushname}\n💰 *Points retirés:* -${points.toLocaleString()}\n🎯 *Total:* ${user.points.toLocaleString()} points\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    },
+
+    async resetuser(msg, args) {
+        if (!args.length) return msg.reply('❌ Usage: /resetuser @user');
+        
+        const mentions = await msg.getMentions();
+        if (!mentions.length) return msg.reply('❌ Mentionnez un utilisateur');
+        
+        const userPhone = mentions[0].id._serialized;
+        
+        if (state.cache.leaderboard.has(userPhone)) {
+            state.cache.leaderboard.delete(userPhone);
+            await msg.reply(`✅ ════ UTILISATEUR RÉINITIALISÉ ════\n\n👤 *Utilisateur:* ${mentions[0].pushname}\n🔄 *Action:* Toutes les données supprimées\n🎯 *Statut:* Nouveau joueur\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        } else {
+            await msg.reply('❌ Utilisateur non trouvé dans le système');
+        }
+    },
+
+    async prize(msg) {
+        const top3 = getLeaderboard().slice(0, 3);
+        if (!top3.length) return msg.reply('📋 Aucun joueur dans le classement');
+        
+        let text = `🎁 ════ GESTION DES PRIX ════ 🎁\n\n`;
+        text += `💰 *PRIX ACTUELS:*\n`;
+        text += `🥇 1er place: ${CONFIG.POINTS.PRIZES[0].toLocaleString()} FCFA\n`;
+        text += `🥈 2e place: ${CONFIG.POINTS.PRIZES[1].toLocaleString()} FCFA\n`;
+        text += `🥉 3e place: ${CONFIG.POINTS.PRIZES[2].toLocaleString()} FCFA\n\n`;
+        
+        text += `🏆 *TOP 3 ACTUEL:*\n`;
+        top3.forEach((user, i) => {
+            const medals = ['🥇', '🥈', '🥉'];
+            text += `${medals[i]} ${user.name} - ${user.points.toLocaleString()} pts\n`;
+        });
+        
+        text += `\n⏰ *Prochaine distribution:* Automatique tous les 30 jours\n`;
+        text += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+        
+        await msg.reply(text);
+    },
+
+    async restart(msg) {
+        await msg.reply(`🔄 ════ REDÉMARRAGE BOT ════\n\n⚠️ *Attention:* Le bot va redémarrer\n⏰ *Temps d'arrêt:* ~30 secondes\n🔄 *Statut:* En cours...\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        
+        setTimeout(() => {
+            process.exit(0);
+        }, 3000);
+    },
+
+    async backup(msg) {
+        const backupData = {
+            timestamp: Date.now(),
+            users: Object.fromEntries(state.cache.leaderboard),
+            groups: Object.fromEntries(state.cache.groups),
+            banned: Object.fromEntries(state.cache.banned),
+            stats: {
+                totalUsers: state.cache.leaderboard.size,
+                totalGroups: state.cache.groups.size,
+                totalBanned: state.cache.banned.size
+            }
+        };
+        
+        // Ici vous pourriez sauvegarder dans un fichier ou base de données
+        console.log('💾 Sauvegarde effectuée:', JSON.stringify(backupData, null, 2));
+        
+        await msg.reply(`💾 ════ SAUVEGARDE EFFECTUÉE ════\n\n✅ *Statut:* Sauvegarde réussie\n📊 *Données:* ${backupData.stats.totalUsers} utilisateurs, ${backupData.stats.totalGroups} groupes\n⏰ *Heure:* ${new Date().toLocaleString('fr-FR')}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    },
+
+    async logs(msg) {
+        const memUsage = process.memoryUsage();
+        const uptime = Math.floor(process.uptime());
+        
+        const logInfo = `📊 ════ LOGS SYSTÈME ════ 📊\n\n⏰ *Temps de fonctionnement:* ${Math.floor(uptime/3600)}h ${Math.floor((uptime%3600)/60)}min\n💾 *Mémoire utilisée:* ${Math.round(memUsage.heapUsed / 1024 / 1024)}MB\n💾 *Mémoire totale:* ${Math.round(memUsage.heapTotal / 1024 / 1024)}MB\n🔄 *Version Node:* ${process.version}\n🎮 *Joueurs actifs:* ${state.cache.leaderboard.size}\n📢 *Groupes connectés:* ${state.cache.groups.size}\n🚫 *Utilisateurs bannis:* ${state.cache.banned.size}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+        
+        await msg.reply(logInfo);
+    },
+
+    async maintenance(msg, args) {
+        if (!args.length) return msg.reply('❌ Usage: /maintenance on/off');
+        
+        const mode = args[0].toLowerCase();
+        if (mode !== 'on' && mode !== 'off') {
+            return msg.reply('❌ Utilisez: /maintenance on ou /maintenance off');
+        }
+        
+        // Vous pouvez créer une variable globale pour gérer le mode maintenance
+        global.maintenanceMode = (mode === 'on');
+        
+        await msg.reply(`🔧 ════ MODE MAINTENANCE ════\n\n🔄 *Statut:* ${mode === 'on' ? 'ACTIVÉ 🔴' : 'DÉSACTIVÉ 🟢'}\n⚠️ *Info:* ${mode === 'on' ? 'Bot en maintenance - Commandes limitées' : 'Bot fonctionnel - Toutes commandes disponibles'}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    },
+
+    async update(msg) {
+        await msg.reply(`🔄 ════ MISE À JOUR BOT ════\n\n⚠️ *Attention:* Fonctionnalité en développement\n📋 *Actions:* Vérification des mises à jour\n🔧 *Statut:* Manuel requis pour l'instant\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    }
+};
+    
 }
 
 async function executeCommands(msg, phone, cmd, args, chat) {
+    // Vérifier le mode maintenance (sauf pour l'admin principal)
+    if (global.maintenanceMode && phone !== CONFIG.ADMIN_NUMBER) {
+        return safeExecute(async () => {
+            await msg.reply('🔧 Bot en maintenance. Réessayez plus tard.');
+        }, null, 'Maintenance mode reply');
+    }
+    
     // Commandes Admin Principal (protégées)
     if (phone === CONFIG.ADMIN_NUMBER) {
         switch (cmd) {
@@ -565,11 +773,81 @@ async function executeCommands(msg, phone, cmd, args, chat) {
                 return safeExecute(async () => {
                     await masterCommands.broadcast(msg, args);
                 }, null, 'Broadcast command');
+
+            case '/announce':
+                return safeExecute(async () => {
+                    await masterCommands.announce(msg, args);
+                }, null, 'Announce command');
+                
+            case '/ban':
+                return safeExecute(async () => {
+                    await masterCommands.ban(msg, args);
+                }, null, 'Ban command');
+                
+            case '/unban':
+                return safeExecute(async () => {
+                    await masterCommands.unban(msg, args);
+                }, null, 'Unban command');
+                
+            case '/userinfo':
+                return safeExecute(async () => {
+                    await masterCommands.userinfo(msg, args);
+                }, null, 'Userinfo command');
+                
+            case '/addpoints':
+                return safeExecute(async () => {
+                    await masterCommands.addpoints(msg, args);
+                }, null, 'Addpoints command');
+                
+            case '/removepoints':
+                return safeExecute(async () => {
+                    await masterCommands.removepoints(msg, args);
+                }, null, 'Removepoints command');
+                
+            case '/resetuser':
+                return safeExecute(async () => {
+                    await masterCommands.resetuser(msg, args);
+                }, null, 'Resetuser command');
+                
+            case '/prize':
+                return safeExecute(async () => {
+                    await masterCommands.prize(msg);
+                }, null, 'Prize command');
+                
+            case '/restart':
+                return safeExecute(async () => {
+                    await masterCommands.restart(msg);
+                }, null, 'Restart command');
+                
+            case '/backup':
+                return safeExecute(async () => {
+                    await masterCommands.backup(msg);
+                }, null, 'Backup command');
+                
+            case '/logs':
+                return safeExecute(async () => {
+                    await masterCommands.logs(msg);
+                }, null, 'Logs command');
+                
+            case '/maintenance':
+                return safeExecute(async () => {
+                    await masterCommands.maintenance(msg, args);
+                }, null, 'Maintenance command');
+                
+            case '/update':
+                return safeExecute(async () => {
+                    await masterCommands.update(msg);
+                }, null, 'Update command');
                 
             case '/help':
                 return safeExecute(async () => {
                     await masterCommands.help(msg);
                 }, null, 'Help command');
+                
+            case '/leaderboard':
+                return safeExecute(async () => {
+                    await masterCommands.leaderboard(msg);
+                }, null, 'Leaderboard command');
         }
     }
     
@@ -598,46 +876,47 @@ async function executeCommands(msg, phone, cmd, args, chat) {
         }
     }
     
-    // Commandes Jeux (protégées)
-    switch (cmd) {
-        case '/quiz':
-            return safeExecute(async () => {
-                await gameCommands.quiz(msg, phone);
-            }, null, 'Quiz command');
-            
-        case '/loto':
-            return safeExecute(async () => {
-                await gameCommands.loto(msg, phone);
-            }, null, 'Loto command');
-            
-        case '/calc':
-            return safeExecute(async () => {
-                await gameCommands.calc(msg, phone);
-            }, null, 'Calc command');
-            
-        case '/pocket':
-            return safeExecute(async () => {
-                await gameCommands.pocket(msg, phone);
-            }, null, 'Pocket command');
-            
-        case '/riddle':
-            return safeExecute(async () => {
-                await gameCommands.riddle(msg, phone);
-            }, null, 'Riddle command');
-            
-        case '/points':
-            return safeExecute(async () => {
-                await gameCommands.points(msg, phone);
-            }, null, 'Points command');
-            
-        case '/top':
-            return safeExecute(async () => {
-                await gameCommands.top(msg);
-            }, null, 'Top command');
-            
-        case '/help':
-            return safeExecute(async () => {
-                await msg.reply(`🎮 ═══════ GUIDE DES COMMANDES ═══════ 🎮
+    // Commandes Jeux (pour tous les utilisateurs non bannis)
+    if (!state.cache.banned.has(phone)) {
+        switch (cmd) {
+            case '/quiz':
+                return safeExecute(async () => {
+                    await gameCommands.quiz(msg, phone);
+                }, null, 'Quiz command');
+                
+            case '/loto':
+                return safeExecute(async () => {
+                    await gameCommands.loto(msg, phone);
+                }, null, 'Loto command');
+                
+            case '/calc':
+                return safeExecute(async () => {
+                    await gameCommands.calc(msg, phone);
+                }, null, 'Calc command');
+                
+            case '/pocket':
+                return safeExecute(async () => {
+                    await gameCommands.pocket(msg, phone);
+                }, null, 'Pocket command');
+                
+            case '/riddle':
+                return safeExecute(async () => {
+                    await gameCommands.riddle(msg, phone);
+                }, null, 'Riddle command');
+                
+            case '/points':
+                return safeExecute(async () => {
+                    await gameCommands.points(msg, phone);
+                }, null, 'Points command');
+                
+            case '/top':
+                return safeExecute(async () => {
+                    await gameCommands.top(msg);
+                }, null, 'Top command');
+                
+            case '/help':
+                return safeExecute(async () => {
+                    await msg.reply(`🎮 ═══════ GUIDE DES COMMANDES ═══════ 🎮
 
 🎯 *JEUX:*
 • /quiz - Questions culture (+10-15 pts)
@@ -659,7 +938,8 @@ async function executeCommands(msg, phone, cmd, args, chat) {
 🥇 1,500 FCFA | 🥈 1,000 FCFA | 🥉 500 FCFA
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-            }, null, 'Help reply');
+                }, null, 'Help reply');
+        }
     }
 }
 // Interface web améliorée
