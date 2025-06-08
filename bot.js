@@ -10,7 +10,7 @@ const CONFIG = {
     SPAM_BAN_TIME: 300000, // 5min
     POINTS: {
         QUIZ_WIN: 10, GAME_WIN: 15, DAILY_USE: 2,
-        PRIZES: [1500, 1000, 500] // FCFA pour top 3
+        PRIZES: [1500, 1000, 500] // FCFA pour top 3 isgroup
     }
 };
 
@@ -122,21 +122,24 @@ function getLeaderboard() {
 
 // Vérifications admin
 async function isGroupAdmin(groupId, phone) {
-    try {
+    return await safeExecute(async () => {
         const chat = await state.client.getChatById(groupId);
-        if (!chat.isGroup) return false;
+        if (!chat || !chat.isGroup || !chat.participants) return false;
+        
         const participant = chat.participants.find(p => p.id._serialized === phone);
         return participant && (participant.isAdmin || participant.isSuperAdmin);
-    } catch { return false; }
+    }, false, 'Check group admin');
 }
 
 async function isBotAdmin(groupId) {
-    try {
+    return await safeExecute(async () => {
         const chat = await state.client.getChatById(groupId);
+        if (!chat || !chat.isGroup || !chat.participants) return false;
+        
         const me = state.client.info.wid._serialized;
         const participant = chat.participants.find(p => p.id._serialized === me);
         return participant && (participant.isAdmin || participant.isSuperAdmin);
-    } catch { return false; }
+    }, false, 'Check bot admin');
 }
 
 // Détection liens
@@ -169,22 +172,22 @@ const masterCommands = {
         const banned = state.cache.banned.size;
         const uptime = Math.floor(process.uptime() / 60);
         
-        await msg.reply(`╔═══════════════════════╗
+        await msg.reply(`╔═════════════════════╗
 ║      📊 STATISTIQUES BOT      ║
-╠═══════════════════════╣
+╠═════════════════════╣
 ║ 👥 Joueurs actifs: ${users.toString().padStart(8)} ║
 ║ 📢 Groupes: ${groups.toString().padStart(13)} ║
 ║ 🚫 Utilisateurs bannis: ${banned.toString().padStart(4)} ║
 ║ ⏰ Temps de fonctionnement: ${uptime}min ║
 ║ 💾 Mémoire utilisée: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB ║
-╚═══════════════════════╝`);
+╚═════════════════════╝`);
     },
     
     async leaderboard(msg) {
         const top = getLeaderboard();
         if (!top.length) return msg.reply('📋 Classement vide');
         
-        let text = `🏆 ═══════ CLASSEMENT GÉNÉRAL ═══════ 🏆\n\n`;
+        let text = `🏆 ════ CLASSEMENT GÉNÉRAL ════ 🏆\n\n`;
         top.forEach((user, i) => {
             const medals = ['🥇', '🥈', '🥉'];
             const medal = i < 3 ? medals[i] : `${i + 1}️⃣`;
@@ -194,7 +197,7 @@ const masterCommands = {
             text += `   🎮 ${user.wins} victoires\n\n`;
         });
         
-        text += `\n🎁 ═══════ RÉCOMPENSES MENSUELLES ═══════\n`;
+        text += `\n🎁 ════ RÉCOMPENSES MENSUELLES ════\n`;
         text += `🥇 1er place: 1,500 FCFA\n`;
         text += `🥈 2e place: 1,000 FCFA\n`;
         text += `🥉 3e place: 500 FCFA\n\n`;
@@ -213,7 +216,7 @@ const masterCommands = {
         for (const group of groups) {
             try {
                 await state.client.sendMessage(group.id._serialized, 
-                    `🔊 ═══════ ANNONCE OFFICIELLE ═══════ 🔊\n\n${message}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🎮 Gaming Bot Admin`);
+                    `🔊 ════ ANNONCE OFFICIELLE ════ 🔊\n\n${message}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🎮 Gaming Bot Admin`);
                 sent++;
                 await new Promise(r => setTimeout(r, 2000));
             } catch {}
@@ -222,7 +225,7 @@ const masterCommands = {
     },
 
     async help(msg) {
-        const helpText = `🎮 ═══════ COMMANDES ADMIN MASTER ═══════ 🎮
+        const helpText = `🎮 ════ COMMANDES ADMIN MASTER ════ 🎮
 
 👑 *GESTION UTILISATEURS:*
 • /makeadmin @user - Promouvoir admin
@@ -272,7 +275,7 @@ const adminCommands = {
         settings.noLinks = !settings.noLinks;
         state.cache.groups.set(groupId, settings);
         
-        await msg.reply(`🔗 ═══════ PARAMÈTRE MODIFIÉ ═══════\n\n${settings.noLinks ? '🚫 Les liens sont maintenant INTERDITS' : '✅ Les liens sont maintenant AUTORISÉS'}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        await msg.reply(`🔗 ════ PARAMÈTRE MODIFIÉ ════\n\n${settings.noLinks ? '🚫 Les liens sont maintenant INTERDITS' : '✅ Les liens sont maintenant AUTORISÉS'}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     },
     
     async adminonly(msg) {
@@ -288,7 +291,7 @@ const adminCommands = {
         settings.adminOnly = !settings.adminOnly;
         state.cache.groups.set(groupId, settings);
         
-        await msg.reply(`👑 ═══════ MODE ADMIN ═══════\n\n${settings.adminOnly ? '🔒 Seuls les ADMINS peuvent utiliser les commandes' : '🔓 TOUS peuvent utiliser les commandes'}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        await msg.reply(`👑 ════ MODE ADMIN ════\n\n${settings.adminOnly ? '🔒 Seuls les ADMINS peuvent utiliser les commandes' : '🔓 TOUS peuvent utiliser les commandes'}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     },
     
     async kick(msg) {
@@ -298,7 +301,7 @@ const adminCommands = {
         const chat = await msg.getChat();
         try {
             await chat.removeParticipants([mentions[0].id._serialized]);
-            await msg.reply(`✅ ═══════ EXCLUSION RÉUSSIE ═══════\n\n👋 ${mentions[0].pushname} a été exclu du groupe\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+            await msg.reply(`✅ ════ EXCLUSION RÉUSSIE ════\n\n👋 ${mentions[0].pushname} a été exclu du groupe\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
         } catch {
             await msg.reply('❌ Impossible d\'exclure cet utilisateur');
         }
@@ -309,7 +312,7 @@ const adminCommands = {
 const gameCommands = {
     async quiz(msg, phone) {
         const quiz = games.quizzes[Math.floor(Math.random() * games.quizzes.length)];
-        await msg.reply(`🧠 ═══════ QUIZ CHALLENGE ═══════ 🧠
+        await msg.reply(`🧠 ════ QUIZ CHALLENGE ════ 🧠
 
 ${quiz.emoji} *QUESTION:*
 ${quiz.q}
@@ -336,7 +339,7 @@ ${quiz.q}
         
         addPoints(phone, points);
         
-        const resultText = `🎲 ═══════ SUPER LOTO ═══════ 🎲
+        const resultText = `🎲 ════ SUPER LOTO ════ 🎲
 
 🎯 *VOS NUMÉROS:* ${numbers.join(' - ')}
 🎰 *NUMÉRO GAGNANT:* ${userGuess}
@@ -358,7 +361,7 @@ ${win ? '🎉 ✨ FÉLICITATIONS! VOUS AVEZ GAGNÉ! ✨' : '😅 Pas de chance c
         
         addPoints(phone, points);
         
-        const resultText = `🃏 ═══════ POCKET CARDS ═══════ 🃏
+        const resultText = `🃏 ════ POCKET CARDS ════ 🃏
 
 🎴 *VOS CARTES:*
    ${cards[0]}    ${cards[1]}
@@ -375,7 +378,7 @@ ${isPair ? '🎉 ✨ PAIRE PARFAITE! ✨' : '🎯 Belle combinaison!'}
     
     async calc(msg, phone) {
         const problem = games.calc();
-        await msg.reply(`🔢 ═══════ CALCUL RAPIDE ═══════ 🔢
+        await msg.reply(`🔢 ════ CALCUL RAPIDE ════ 🔢
 
 🧮 *CALCUL À RÉSOUDRE:*
    ${problem.question}
@@ -396,7 +399,7 @@ ${isPair ? '🎉 ✨ PAIRE PARFAITE! ✨' : '🎯 Belle combinaison!'}
 
     async riddle(msg, phone) {
         const riddle = games.riddles[Math.floor(Math.random() * games.riddles.length)];
-        await msg.reply(`🤔 ═══════ ÉNIGME MYSTÈRE ═══════ 🤔
+        await msg.reply(`🤔 ════ ÉNIGME MYSTÈRE ════ 🤔
 
 ${riddle.emoji} *ÉNIGME:*
 ${riddle.q}
@@ -425,7 +428,7 @@ ${riddle.q}
         const daysActive = Math.floor((Date.now() - user.joinDate) / (1000 * 60 * 60 * 24));
         const avgPointsPerDay = daysActive > 0 ? Math.round(user.points / daysActive) : 0;
         
-        await msg.reply(`💰 ═══════ VOS STATISTIQUES ═══════ 💰
+        await msg.reply(`💰 ════ VOS STATISTIQUES ════ 💰
 
 👤 *JOUEUR:* ${user.name}
 🎯 *POINTS TOTAUX:* ${user.points.toLocaleString()}
@@ -443,7 +446,7 @@ ${rank <= 3 ? '🎁 *VOUS ÊTES DANS LE TOP 3!*\n🏆 Continuez pour gagner des 
         const top = getLeaderboard();
         if (!top.length) return msg.reply('📋 Classement vide');
         
-        let text = `🏆 ═══════ TOP 20 JOUEURS ═══════ 🏆\n\n`;
+        let text = `🏆 ════ TOP 20 JOUEURS ════ 🏆\n\n`;
         
         top.forEach((user, i) => {
             const medals = ['🥇', '🥈', '🥉'];
@@ -453,7 +456,7 @@ ${rank <= 3 ? '🎁 *VOUS ÊTES DANS LE TOP 3!*\n🏆 Continuez pour gagner des 
             text += `${medal} ${crown} *${user.name}* - ${user.points.toLocaleString()} pts\n`;
         });
         
-        text += `\n🎁 ═══════ RÉCOMPENSES MENSUELLES ═══════\n`;
+        text += `\n🎁 ════ RÉCOMPENSES MENSUELLES ════\n`;
         text += `🥇 1er place: 1,500 FCFA\n`;
         text += `🥈 2e place: 1,000 FCFA\n`;
         text += `🥉 3e place: 500 FCFA\n\n`;
@@ -464,6 +467,201 @@ ${rank <= 3 ? '🎁 *VOUS ÊTES DANS LE TOP 3!*\n🏆 Continuez pour gagner des 
     }
 };
 
+async function handleGameResponses(msg, phone, text) {
+    // Quiz responses
+    if (state.cache[`quiz_${phone}`]) {
+        const quiz = state.cache[`quiz_${phone}`];
+        clearTimeout(quiz.timeout);
+        state.cache[`quiz_${phone}`] = null;
+        
+        const isCorrect = quiz.a.some(ans => text.toLowerCase().includes(ans));
+        if (isCorrect) {
+            const points = addPoints(phone, quiz.points, 'quiz');
+            const user = state.cache.leaderboard.get(phone);
+            if (user) user.wins++;
+            
+            return safeExecute(async () => {
+                await msg.reply(`🎉 ═══════ BRAVO! ═══════ 🎉
+
+${quiz.emoji} *BONNE RÉPONSE!*
+💰 +${quiz.points} points
+🎯 Total: ${points.toLocaleString()} pts
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+            }, null, 'Quiz success reply');
+        } else {
+            return safeExecute(async () => {
+                await msg.reply(`❌ Mauvaise réponse! Solution: ${quiz.a[0]}`);
+            }, null, 'Quiz fail reply');
+        }
+    }
+    
+    // Calc responses
+    if (state.cache[`calc_${phone}`]) {
+        const calc = state.cache[`calc_${phone}`];
+        clearTimeout(calc.timeout);
+        state.cache[`calc_${phone}`] = null;
+        
+        if (parseInt(text) === calc.answer) {
+            const points = addPoints(phone, 15, 'calc');
+            const user = state.cache.leaderboard.get(phone);
+            if (user) user.wins++;
+            
+            return safeExecute(async () => {
+                await msg.reply(`🎉 ═══════ CALCUL PARFAIT! ═══════ 🎉
+
+🔢 *BRAVO!*
+💰 +15 points
+🎯 Total: ${points.toLocaleString()} pts
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+            }, null, 'Calc success reply');
+        } else {
+            return safeExecute(async () => {
+                await msg.reply(`❌ Incorrect! Réponse: ${calc.answer}`);
+            }, null, 'Calc fail reply');
+        }
+    }
+    
+    // Riddle responses
+    if (state.cache[`riddle_${phone}`]) {
+        const riddle = state.cache[`riddle_${phone}`];
+        clearTimeout(riddle.timeout);
+        state.cache[`riddle_${phone}`] = null;
+        
+        const isCorrect = riddle.a.some(ans => text.toLowerCase().includes(ans));
+        if (isCorrect) {
+            const points = addPoints(phone, riddle.points, 'riddle');
+            const user = state.cache.leaderboard.get(phone);
+            if (user) user.wins++;
+            
+            return safeExecute(async () => {
+                await msg.reply(`🎉 ═══════ ÉNIGME RÉSOLUE! ═══════ 🎉
+
+${riddle.emoji} *EXCELLENT!*
+💰 +${riddle.points} points
+🎯 Total: ${points.toLocaleString()} pts
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+            }, null, 'Riddle success reply');
+        } else {
+            return safeExecute(async () => {
+                await msg.reply(`❌ Pas tout à fait! Solution: ${riddle.a[0]}`);
+            }, null, 'Riddle fail reply');
+        }
+    }
+}
+
+async function executeCommands(msg, phone, cmd, args, chat) {
+    // Commandes Admin Principal (protégées)
+    if (phone === CONFIG.ADMIN_NUMBER) {
+        switch (cmd) {
+            case '/stats':
+                return safeExecute(async () => {
+                    await masterCommands.stats(msg);
+                }, null, 'Stats command');
+                
+            case '/broadcast':
+                return safeExecute(async () => {
+                    await masterCommands.broadcast(msg, args);
+                }, null, 'Broadcast command');
+                
+            case '/help':
+                return safeExecute(async () => {
+                    await masterCommands.help(msg);
+                }, null, 'Help command');
+        }
+    }
+    
+    // Commandes Admin Groupe (protégées)
+    if (chat && chat.isGroup) {
+        const isAdmin = await safeExecute(async () => 
+            await isGroupAdmin(chat.id._serialized, phone), false, 'Check group admin');
+            
+        if (isAdmin || phone === CONFIG.ADMIN_NUMBER) {
+            switch (cmd) {
+                case '/nolinks':
+                    return safeExecute(async () => {
+                        await adminCommands.nolinks(msg);
+                    }, null, 'Nolinks command');
+                    
+                case '/adminonly':
+                    return safeExecute(async () => {
+                        await adminCommands.adminonly(msg);
+                    }, null, 'Adminonly command');
+                    
+                case '/kick':
+                    return safeExecute(async () => {
+                        await adminCommands.kick(msg);
+                    }, null, 'Kick command');
+            }
+        }
+    }
+    
+    // Commandes Jeux (protégées)
+    switch (cmd) {
+        case '/quiz':
+            return safeExecute(async () => {
+                await gameCommands.quiz(msg, phone);
+            }, null, 'Quiz command');
+            
+        case '/loto':
+            return safeExecute(async () => {
+                await gameCommands.loto(msg, phone);
+            }, null, 'Loto command');
+            
+        case '/calc':
+            return safeExecute(async () => {
+                await gameCommands.calc(msg, phone);
+            }, null, 'Calc command');
+            
+        case '/pocket':
+            return safeExecute(async () => {
+                await gameCommands.pocket(msg, phone);
+            }, null, 'Pocket command');
+            
+        case '/riddle':
+            return safeExecute(async () => {
+                await gameCommands.riddle(msg, phone);
+            }, null, 'Riddle command');
+            
+        case '/points':
+            return safeExecute(async () => {
+                await gameCommands.points(msg, phone);
+            }, null, 'Points command');
+            
+        case '/top':
+            return safeExecute(async () => {
+                await gameCommands.top(msg);
+            }, null, 'Top command');
+            
+        case '/help':
+            return safeExecute(async () => {
+                await msg.reply(`🎮 ═══════ GUIDE DES COMMANDES ═══════ 🎮
+
+🎯 *JEUX:*
+• /quiz - Questions culture (+10-15 pts)
+• /loto - Loterie (+5-50 pts)
+• /calc - Calculs (+15 pts)
+• /pocket - Cartes (+10-30 pts)
+• /riddle - Énigmes (+10-15 pts)
+
+🏆 *STATS:*
+• /points - Vos statistiques
+• /top - Classement
+
+👑 *ADMIN (Groupes):*
+• /nolinks - Gérer les liens
+• /adminonly - Mode admin
+• /kick @user - Exclure
+
+🎁 *PRIX MENSUELS:*
+🥇 1,500 FCFA | 🥈 1,000 FCFA | 🥉 500 FCFA
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+            }, null, 'Help reply');
+    }
+}
 // Interface web améliorée
 const app = express();
 app.get('/', (req, res) => {
@@ -575,7 +773,7 @@ client.on('ready', async () => {
     // Notification à l'admin principal
     try {
         await client.sendMessage(CONFIG.ADMIN_NUMBER, 
-            `🚀 ═══════ BOT GAMING ONLINE ═══════ 🚀
+            `🚀 ════ BOT GAMING ONLINE ════ 🚀
 
 ✅ *STATUT:* Bot démarré avec succès
 ⏰ *HEURE:* ${new Date().toLocaleString('fr-FR')}
@@ -599,241 +797,113 @@ Tapez /help pour voir toutes vos commandes
 });
 
 client.on('group_join', async (notification) => {
-    const chat = await notification.getChat();
-    setTimeout(async () => {
-        await client.sendMessage(chat.id._serialized, 
-            `🎮 ═══════ BIENVENUE DANS ${chat.name.toUpperCase()}! ═══════ 🎮
+    await safeExecute(async () => {
+        // Vérifier si on peut traiter cet événement
+        const groupId = notification.chatId;
+        if (!canExecute(`group_join_${groupId}`, CONFIG.RATE_LIMITS.GROUP_JOIN_DELAY)) {
+            console.log('⏰ Group join ignoré (rate limit)');
+            return;
+        }
 
-🚀 *Gaming Bot activé avec succès!*
+        const chat = await notification.getChat();
+        if (!chat || !chat.isGroup) return;
 
-🎯 *JEUX DISPONIBLES:*
-• /quiz - Questions culture générale
-• /loto - Loterie avec gros lots
-• /calc - Calculs rapides
-• /pocket - Jeu de cartes
-• /riddle - Énigmes mystères
+        console.log(`✅ Bot ajouté au groupe: ${chat.name}`);
+        
+        // Attendre un peu avant d'envoyer le message
+        setTimeout(async () => {
+            await safeExecute(async () => {
+                await client.sendMessage(chat.id._serialized, 
+                    `🎮 ═══════ BIENVENUE! ═══════ 🎮
 
-🏆 *CLASSEMENT & POINTS:*
-• /points - Vos statistiques
-• /top - Top 20 joueurs
+🚀 *Gaming Bot activé!*
 
-👑 *COMMANDES ADMIN:*
-• /nolinks - Bloquer les liens
-• /adminonly - Mode admin seul
-• /kick @user - Exclure membre
+🎯 *JEUX:* /quiz /loto /calc /pocket /riddle
+🏆 *STATS:* /points /top
+👑 *ADMIN:* /help
 
-🎁 *RÉCOMPENSES MENSUELLES:*
-🥇 1er: 1,500 FCFA | 🥈 2e: 1,000 FCFA | 🥉 3e: 500 FCFA
+🎁 *PRIX MENSUELS:*
+🥇 1,500 FCFA | 🥈 1,000 FCFA | 🥉 500 FCFA
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎮 Amusez-vous bien et que le meilleur gagne! 🏆`
-        );
-    }, 3000);
+🎮 Tapez /help pour commencer!`
+                );
+            }, null, 'Envoi message bienvenue');
+        }, 3000);
+        
+    }, null, 'Group join handler');
 });
 
 client.on('message', async (msg) => {
+    // Protection de base
     if (!state.ready || !msg.body || msg.fromMe) return;
     
-    try {
+    await safeExecute(async () => {
         const contact = await msg.getContact();
         const phone = contact.id._serialized;
         const text = msg.body.trim();
+        
+        // Rate limiting par utilisateur
+        if (!canExecute(`user_${phone}`, 1000)) return;
+        
         const args = text.split(' ').slice(1);
         const cmd = text.split(' ')[0].toLowerCase();
         
-        // Anti-spam
+        // Anti-spam avec protection
         if (checkSpam(phone)) {
-            return msg.reply('🚫 ═══════ ANTI-SPAM ACTIVÉ ═══════\n\n⏰ Vous envoyez trop de messages!\n🔒 Attendez 5 minutes avant de réessayer.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            return safeExecute(async () => {
+                await msg.reply('🚫 Trop de messages! Attendez 5 minutes.');
+            }, null, 'Anti-spam reply');
         }
         
-        // Mettre à jour nom utilisateur
+        // Mise à jour nom utilisateur sécurisée
         if (contact.pushname && state.cache.leaderboard.has(phone)) {
             const user = state.cache.leaderboard.get(phone);
-            user.name = contact.pushname;
+            user.name = contact.pushname.substring(0, 50); // Limiter longueur
             state.cache.leaderboard.set(phone, user);
         }
         
-        // Vérifier liens interdits
-        const chat = await msg.getChat();
-        if (chat.isGroup) {
+        // Vérification liens dans groupes
+        const chat = await safeExecute(async () => await msg.getChat(), null, 'Get chat');
+        if (chat && chat.isGroup) {
             const groupSettings = state.cache.groups.get(chat.id._serialized);
             if (groupSettings?.noLinks && hasLinks(text)) {
-                const isAdmin = await isGroupAdmin(chat.id._serialized, phone);
-                if (!isAdmin && await isBotAdmin(chat.id._serialized)) {
-                    await msg.delete(true);
-                    return msg.reply('🔗 ═══════ LIEN DÉTECTÉ ═══════\n\n🚫 Les liens sont interdits dans ce groupe!\n👑 Seuls les admins peuvent partager des liens.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                const isAdmin = await safeExecute(async () => 
+                    await isGroupAdmin(chat.id._serialized, phone), false, 'Check admin');
+                    
+                if (!isAdmin && await safeExecute(async () => 
+                    await isBotAdmin(chat.id._serialized), false, 'Check bot admin')) {
+                    
+                    await safeExecute(async () => {
+                        await msg.delete(true);
+                        await msg.reply('🔗 Liens interdits dans ce groupe!');
+                    }, null, 'Delete link message');
+                    return;
                 }
             }
             
-            // Mode admin only
+            // Mode admin only avec protection
             if (groupSettings?.adminOnly && text.startsWith('/')) {
-                const isAdmin = await isGroupAdmin(chat.id._serialized, phone);
+                const isAdmin = await safeExecute(async () => 
+                    await isGroupAdmin(chat.id._serialized, phone), false, 'Check admin mode');
+                    
                 if (!isAdmin && phone !== CONFIG.ADMIN_NUMBER) {
-                    return msg.reply('👑 ═══════ ACCÈS RESTREINT ═══════\n\n🔒 Les commandes sont réservées aux admins!\n💬 Contactez un administrateur pour plus d\'infos.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                    return safeExecute(async () => {
+                        await msg.reply('👑 Commandes réservées aux admins!');
+                    }, null, 'Admin only reply');
                 }
             }
         }
         
-        // Réponses aux jeux en cours
-        if (state.cache[`quiz_${phone}`]) {
-            const quiz = state.cache[`quiz_${phone}`];
-            clearTimeout(quiz.timeout);
-            state.cache[`quiz_${phone}`] = null;
-            
-            if (quiz.a.some(ans => text.toLowerCase().includes(ans))) {
-                const points = addPoints(phone, quiz.points, 'quiz');
-                const user = state.cache.leaderboard.get(phone);
-                user.wins++;
-                return msg.reply(`🎉 ═══════ BRAVO! BONNE RÉPONSE! ═══════ 🎉
-
-${quiz.emoji} *QUIZ RÉUSSI!*
-✅ *RÉPONSE:* ${quiz.a[0]}
-💰 *POINTS GAGNÉS:* +${quiz.points}
-🎯 *TOTAL POINTS:* ${points.toLocaleString()}
-🏆 *VICTOIRES:* ${user.wins}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎮 Continuez à jouer pour gravir le classement!`);
-            } else {
-                return msg.reply(`❌ ═══════ RÉPONSE INCORRECTE ═══════ ❌
-
-${quiz.emoji} *QUIZ ÉCHOUÉ*
-✅ *BONNE RÉPONSE:* ${quiz.a[0]}
-💡 *CONSEIL:* Réfléchissez bien la prochaine fois!
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎮 Retentez votre chance avec /quiz`);
-            }
-        }
-        
-        if (state.cache[`calc_${phone}`]) {
-            const calc = state.cache[`calc_${phone}`];
-            clearTimeout(calc.timeout);
-            state.cache[`calc_${phone}`] = null;
-            
-            if (parseInt(text) === calc.answer) {
-                const points = addPoints(phone, 15, 'calc');
-                const user = state.cache.leaderboard.get(phone);
-                user.wins++;
-                return msg.reply(`🎉 ═══════ CALCUL PARFAIT! ═══════ 🎉
-
-🔢 *CALCUL RÉUSSI!*
-✅ *RÉPONSE:* ${calc.answer}
-💰 *POINTS GAGNÉS:* +15
-🎯 *TOTAL POINTS:* ${points.toLocaleString()}
-🏆 *VICTOIRES:* ${user.wins}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🧮 Votre rapidité est impressionnante!`);
-            } else {
-                return msg.reply(`❌ ═══════ CALCUL INCORRECT ═══════ ❌
-
-🔢 *CALCUL ÉCHOUÉ*
-✅ *BONNE RÉPONSE:* ${calc.answer}
-💡 *CONSEIL:* Prenez votre temps pour calculer!
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎮 Retentez avec /calc`);
-            }
-        }
-
-        if (state.cache[`riddle_${phone}`]) {
-            const riddle = state.cache[`riddle_${phone}`];
-            clearTimeout(riddle.timeout);
-            state.cache[`riddle_${phone}`] = null;
-            
-            if (riddle.a.some(ans => text.toLowerCase().includes(ans))) {
-                const points = addPoints(phone, riddle.points, 'riddle');
-                const user = state.cache.leaderboard.get(phone);
-                user.wins++;
-                return msg.reply(`🎉 ═══════ ÉNIGME RÉSOLUE! ═══════ 🎉
-
-${riddle.emoji} *GÉNIAL!*
-✅ *RÉPONSE:* ${riddle.a[0]}
-💰 *POINTS GAGNÉS:* +${riddle.points}
-🎯 *TOTAL POINTS:* ${points.toLocaleString()}
-🏆 *VICTOIRES:* ${user.wins}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🧠 Votre logique est excellente!`);
-            } else {
-                return msg.reply(`❌ ═══════ ÉNIGME NON RÉSOLUE ═══════ ❌
-
-${riddle.emoji} *RÉPONSE INCORRECTE*
-✅ *SOLUTION:* ${riddle.a[0]}
-💡 *CONSEIL:* Réfléchissez différemment!
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎮 Nouvelle énigme avec /riddle`);
-            }
-        }
+        // Traitement des réponses aux jeux (sécurisé)
+        await handleGameResponses(msg, phone, text);
         
         if (!text.startsWith('/')) return;
         
-        // Commandes Admin Principal
-        if (phone === CONFIG.ADMIN_NUMBER) {
-            switch (cmd) {
-                case '/makeadmin': return masterCommands.makeadmin(msg, args);
-                case '/stats': return masterCommands.stats(msg);
-                case '/leaderboard': return masterCommands.leaderboard(msg);
-                case '/broadcast': return masterCommands.broadcast(msg, args);
-                case '/help': return masterCommands.help(msg);
-            }
-        }
+        // Exécution des commandes avec protection
+        await executeCommands(msg, phone, cmd, args, chat);
         
-        // Commandes Admin Groupe
-        if (chat.isGroup) {
-            const isAdmin = await isGroupAdmin(chat.id._serialized, phone) || phone === CONFIG.ADMIN_NUMBER;
-            if (isAdmin) {
-                switch (cmd) {
-                    case '/nolinks': return adminCommands.nolinks(msg);
-                    case '/adminonly': return adminCommands.adminonly(msg);
-                    case '/kick': return adminCommands.kick(msg);
-                }
-            }
-        }
-        
-        // Commandes Jeux (tous)
-        switch (cmd) {
-            case '/quiz': return gameCommands.quiz(msg, phone);
-            case '/loto': return gameCommands.loto(msg, phone);
-            case '/pocket': return gameCommands.pocket(msg, phone);
-            case '/calc': return gameCommands.calc(msg, phone);
-            case '/riddle': return gameCommands.riddle(msg, phone);
-            case '/points': return gameCommands.points(msg, phone);
-            case '/top': return gameCommands.top(msg);
-            case '/help':
-                return msg.reply(`🎮 ═══════ GUIDE DES COMMANDES ═══════ 🎮
-
-🎯 *JEUX DISPONIBLES:*
-• /quiz - Questions culture générale (+10-15 pts)
-• /loto - Loterie avec gros lots (+5-50 pts)
-• /calc - Calculs mathématiques (+15 pts)
-• /pocket - Jeu de cartes (+10-30 pts)
-• /riddle - Énigmes mystères (+10-15 pts)
-
-🏆 *CLASSEMENT & STATS:*
-• /points - Vos statistiques personnelles
-• /top - Top 20 des meilleurs joueurs
-
-👑 *COMMANDES ADMIN (Groupes):*
-• /nolinks - Activer/désactiver les liens
-• /adminonly - Mode commandes admin seul
-• /kick @user - Exclure un membre
-
-🎁 *SYSTÈME DE RÉCOMPENSES:*
-🥇 1er place: 1,500 FCFA (mensuel)
-🥈 2e place: 1,000 FCFA (mensuel)  
-🥉 3e place: 500 FCFA (mensuel)
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎮 Amusez-vous et gagnez des prix! 🏆`);
-        }
-        
-    } catch (error) {
-        console.error('Erreur:', error);
-        await msg.reply('❌ ═══════ ERREUR SYSTÈME ═══════\n\n🔧 Une erreur technique s\'est produite.\n🔄 Veuillez réessayer dans quelques instants.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    }
+    }, null, 'Message handler principal');
 });
 
 // Vérification mensuelle des prix améliorée
@@ -856,7 +926,7 @@ setInterval(async () => {
                 try {
                     // Message au gagnant
                     await client.sendMessage(`${user.phone}@c.us`, 
-                        `🎉 ═══════ FÉLICITATIONS! ═══════ 🎉
+                        `🎉 ════ FÉLICITATIONS! ════ 🎉
 
 ${medals[i]} *VOUS AVEZ GAGNÉ UN PRIX!*
 
@@ -875,7 +945,7 @@ https://wa.me/+237651104356?text=Bonjour%20Admin%2C%20je%20suis%20${encodeURICom
                     
                     // Notification à l'admin
                     await client.sendMessage(CONFIG.ADMIN_NUMBER, 
-                        `💰 ═══════ PRIX À DISTRIBUER ═══════ 💰
+                        `💰 ════ PRIX À DISTRIBUER ════ 💰
 
 ${medals[i]} *GAGNANT DU MOIS:*
 👤 *NOM:* ${user.name}
@@ -915,7 +985,7 @@ setInterval(() => {
         totalGames: Array.from(state.cache.leaderboard.values()).reduce((sum, user) => sum + user.wins, 0)
     };
     
-    console.log(`🎮 ═══════ STATISTIQUES BOT ═══════
+    console.log(`🎮 ════ STATISTIQUES BOT ═══════
 👥 Joueurs actifs: ${stats.players}
 📢 Groupes connectés: ${stats.groups}  
 💰 Points distribués: ${stats.totalPoints.toLocaleString()}
@@ -924,10 +994,40 @@ setInterval(() => {
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 }, 300000); // Toutes les 5 minutes
 
+setInterval(() => {
+    const now = Date.now();
+    
+    // Nettoyer les timeouts expirés
+    Object.keys(state.cache).forEach(key => {
+        if (key.startsWith('quiz_') || key.startsWith('calc_') || key.startsWith('riddle_')) {
+            const gameData = state.cache[key];
+            if (gameData && gameData.timeout && gameData.timeout._destroyed) {
+                delete state.cache[key];
+            }
+        }
+    });
+    
+    // Nettoyer le rate limiter
+    for (const [key, timestamp] of rateLimiter.entries()) {
+        if (now - timestamp > 300000) { // 5 minutes
+            rateLimiter.delete(key);
+        }
+    }
+    
+    // Nettoyer les utilisateurs bannis expirés
+    for (const [phone, banTime] of state.cache.banned.entries()) {
+        if (now > banTime) {
+            state.cache.banned.delete(phone);
+        }
+    }
+    
+    console.log('🧹 Nettoyage automatique effectué');
+}, CONFIG.CLEANUP_INTERVAL);
+
 // Démarrage du client et serveur
 client.initialize();
 app.listen(CONFIG.PORT, () => {
-    console.log(`🌐 ═══════ SERVEUR DÉMARRÉ ═══════
+    console.log(`🌐 ════ SERVEUR DÉMARRÉ ═══════
 🔗 Port: ${CONFIG.PORT}
 🎮 Dashboard: http://localhost:${CONFIG.PORT}
 ⚡ Status: En ligne
@@ -935,26 +1035,35 @@ app.listen(CONFIG.PORT, () => {
 });
 
 // Gestion propre de l'arrêt
-process.on('SIGTERM', () => {
-    console.log('🛑 ═══════ ARRÊT DU BOT ═══════');
-    
-    // Notification d'arrêt à l'admin
-    if (state.client && state.ready) {
-        state.client.sendMessage(CONFIG.ADMIN_NUMBER, 
-            `🛑 ═══════ BOT GAMING OFFLINE ═══════
-
-⚠️ *STATUT:* Bot arrêté
-⏰ *HEURE:* ${new Date().toLocaleString('fr-FR')}
-📊 *DERNIÈRES STATS:*
-• ${state.cache.leaderboard.size} joueurs
-• ${state.cache.groups.size} groupes
-
-🔄 *REDÉMARRAGE:* Automatique prévu
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`
-        ).finally(() => {
-            process.exit(0);
-        });
-    } else {
-        process.exit(0);
-    }
+// ════════ PARTIE 1: AJOUTEZ APRÈS LA CONFIGURATION ════════
+// Protection globale contre les erreurs
+process.on('uncaughtException', (error) => {
+    console.error('🚨 ERREUR CRITIQUE:', error);
+    // Ne pas fermer le processus, juste logger
 });
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('🚨 PROMESSE REJETÉE:', reason);
+    // Ne pas fermer le processus
+});
+
+// Gestionnaire d'erreurs sécurisé
+const safeExecute = async (fn, fallback = null, context = 'Opération') => {
+    try {
+        return await fn();
+    } catch (error) {
+        console.error(`❌ Erreur ${context}:`, error.message);
+        return fallback;
+    }
+};
+
+// Rate limiter pour éviter le spam d'opérations
+const rateLimiter = new Map();
+const canExecute = (key, delay = 1000) => {
+    const now = Date.now();
+    const last = rateLimiter.get(key) || 0;
+    if (now - last < delay) return false;
+    rateLimiter.set(key, now);
+    return true;
+};
+
