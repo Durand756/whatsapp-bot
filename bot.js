@@ -172,15 +172,15 @@ const masterCommands = {
         const banned = state.cache.banned.size;
         const uptime = Math.floor(process.uptime() / 60);
         
-        await msg.reply(`╔═════════════════════╗
+        await msg.reply(`╔═══════════════════╗
 ║      📊 STATISTIQUES BOT      ║
-╠═════════════════════╣
+╠══════════════════╣
 ║ 👥 Joueurs actifs: ${users.toString().padStart(8)} ║
 ║ 📢 Groupes: ${groups.toString().padStart(13)} ║
 ║ 🚫 Utilisateurs bannis: ${banned.toString().padStart(4)} ║
 ║ ⏰ Temps de fonctionnement: ${uptime}min ║
 ║ 💾 Mémoire utilisée: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB ║
-╚═════════════════════╝`);
+╚═══════════════════╝`);
     },
     
     async leaderboard(msg) {
@@ -549,7 +549,7 @@ ${riddle.emoji} *EXCELLENT!*
                 await msg.reply(`❌ Pas tout à fait! Solution: ${riddle.a[0]}`);
             }, null, 'Riddle fail reply');
         }
-    }
+    },
 
         async ban(msg, args) {
         if (!args.length) return msg.reply('❌ Usage: /ban @user [raison]');
