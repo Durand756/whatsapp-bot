@@ -994,36 +994,6 @@ setInterval(() => {
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 }, 300000); // Toutes les 5 minutes
 
-setInterval(() => {
-    const now = Date.now();
-    
-    // Nettoyer les timeouts expirés
-    Object.keys(state.cache).forEach(key => {
-        if (key.startsWith('quiz_') || key.startsWith('calc_') || key.startsWith('riddle_')) {
-            const gameData = state.cache[key];
-            if (gameData && gameData.timeout && gameData.timeout._destroyed) {
-                delete state.cache[key];
-            }
-        }
-    });
-    
-    // Nettoyer le rate limiter
-    for (const [key, timestamp] of rateLimiter.entries()) {
-        if (now - timestamp > 300000) { // 5 minutes
-            rateLimiter.delete(key);
-        }
-    }
-    
-    // Nettoyer les utilisateurs bannis expirés
-    for (const [phone, banTime] of state.cache.banned.entries()) {
-        if (now > banTime) {
-            state.cache.banned.delete(phone);
-        }
-    }
-    
-    console.log('🧹 Nettoyage automatique effectué');
-}, CONFIG.CLEANUP_INTERVAL);
-
 // Démarrage du client et serveur
 client.initialize();
 app.listen(CONFIG.PORT, () => {
