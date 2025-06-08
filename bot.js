@@ -15,7 +15,7 @@ const CONFIG = {
 };
 
 // État global
-const state = {
+const state = { 
     ready: false, qr: null, client: null,
     cache: { 
         users: new Map(), groups: new Map(), 
